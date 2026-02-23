@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anipyrenamer"
+version = "0.1.0"
+description = "Rename anime files using ED2K hash and AniDB."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pycryptodome>=3.20",
+    "rich>=13.7",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.8",
+    "mypy>=1.0",
+]
+
+[project.scripts]
+anipyrenamer = "anipyrenamer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
