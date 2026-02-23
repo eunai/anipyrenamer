@@ -40,3 +40,15 @@ def test_render_template_aid_eid_fid_gid() -> None:
         gid="4",
     )
     assert "1" in out and "2" in out and "3" in out and "4" in out
+
+
+def test_render_template_group_short_and_long() -> None:
+    """%group% uses short by default; %grouplong% uses long."""
+    out = render_template(
+        "[%group%] [%grouplong%]",
+        group="SEV",
+        group_long="Sublime Encoded Video",
+    )
+    assert "SEV" in out and "Sublime" in out
+    out_short_only = render_template("[%group%]", group="SEV", group_long="")
+    assert "SEV" in out_short_only

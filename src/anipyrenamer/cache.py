@@ -12,6 +12,15 @@ from anipyrenamer.models import FileInfo
 CACHE_STALE_DAYS = 30
 CACHE_STALE_SECONDS = CACHE_STALE_DAYS * 24 * 60 * 60
 
+# Extra columns for AniAdd-style variables (migration adds if missing)
+FILE_ANIDB_EXTRA_COLUMNS = [
+    "title_romaji", "title_english", "title_kanji", "title_synonym", "title_other",
+    "eptitle_romaji", "eptitle_english", "eptitle_kanji",
+    "ep_count", "ep_highest", "year_begin", "year_end", "categories", "anime_type",
+    "deprecated", "censored", "anidb_filename", "crc", "video_resolution",
+    "audio_codec", "video_codec", "audio_langs", "subtitle_langs", "duration", "watched",
+]
+
 
 def get_db_path(db_path: str | None) -> str:
     """Default DB in user cache or current dir; else use provided path."""
@@ -21,7 +30,7 @@ def get_db_path(db_path: str | None) -> str:
 
 
 def init_db(db_path: str) -> None:
-    """Create tables if they do not exist."""
+    """Create tables if they do not exist; add any missing columns to file_anidb."""
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
@@ -39,11 +48,42 @@ def init_db(db_path: str) -> None:
                 episode_number TEXT,
                 episode_title TEXT,
                 group_name TEXT,
+                group_short_name TEXT,
                 file_version TEXT,
+                title_romaji TEXT,
+                title_english TEXT,
+                title_kanji TEXT,
+                title_synonym TEXT,
+                title_other TEXT,
+                eptitle_romaji TEXT,
+                eptitle_english TEXT,
+                eptitle_kanji TEXT,
+                ep_count TEXT,
+                ep_highest TEXT,
+                year_begin TEXT,
+                year_end TEXT,
+                categories TEXT,
+                anime_type TEXT,
+                deprecated TEXT,
+                censored TEXT,
+                anidb_filename TEXT,
+                crc TEXT,
+                video_resolution TEXT,
+                audio_codec TEXT,
+                video_codec TEXT,
+                audio_langs TEXT,
+                subtitle_langs TEXT,
+                duration TEXT,
+                watched TEXT,
                 PRIMARY KEY (ed2k, size)
             )
             """
         )
+        cur = conn.execute("PRAGMA table_info(file_anidb)")
+        existing = {row[1] for row in cur.fetchall()}
+        for col in FILE_ANIDB_EXTRA_COLUMNS:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE file_anidb ADD COLUMN {col} TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS rename_history (
@@ -72,15 +112,24 @@ def get_file_info(db_path: str, size: int, ed2k: str) -> FileInfo | None:
         return _row_to_file_info(row)
 
 
+def _optional(row: sqlite3.Row, key: str) -> str:
+    return (row[key] or "") if key in row.keys() else ""
+
+
 def set_file_info(db_path: str, info: FileInfo) -> None:
-    """Upsert file_anidb row."""
+    """Upsert file_anidb row with all fields (cached for template tokens)."""
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO file_anidb (
                 ed2k, size, fid, aid, eid, gid, quality, source, cached_at,
-                anime_title, episode_number, episode_title, group_name, file_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                anime_title, episode_number, episode_title, group_name, group_short_name, file_version,
+                title_romaji, title_english, title_kanji, title_synonym, title_other,
+                eptitle_romaji, eptitle_english, eptitle_kanji,
+                ep_count, ep_highest, year_begin, year_end, categories, anime_type,
+                deprecated, censored, anidb_filename, crc, video_resolution,
+                audio_codec, video_codec, audio_langs, subtitle_langs, duration, watched
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 info.ed2k,
@@ -96,7 +145,33 @@ def set_file_info(db_path: str, info: FileInfo) -> None:
                 info.episode_number,
                 info.episode_title,
                 info.group_name,
+                info.group_short_name,
                 info.file_version,
+                info.title_romaji,
+                info.title_english,
+                info.title_kanji,
+                info.title_synonym,
+                info.title_other,
+                info.eptitle_romaji,
+                info.eptitle_english,
+                info.eptitle_kanji,
+                info.ep_count,
+                info.ep_highest,
+                info.year_begin,
+                info.year_end,
+                info.categories,
+                info.anime_type,
+                info.deprecated,
+                info.censored,
+                info.anidb_filename,
+                info.crc,
+                info.video_resolution,
+                info.audio_codec,
+                info.video_codec,
+                info.audio_langs,
+                info.subtitle_langs,
+                info.duration,
+                info.watched,
             ),
         )
         conn.commit()
@@ -126,8 +201,34 @@ def _row_to_file_info(row: sqlite3.Row) -> FileInfo:
         quality=row["quality"] or "",
         source=row["source"] or "",
         group_name=row["group_name"] or "",
+        group_short_name=_optional(row, "group_short_name"),
         anime_title=row["anime_title"] or "",
         episode_number=row["episode_number"] or "",
         episode_title=row["episode_title"] or "",
         file_version=row["file_version"] or "",
+        title_romaji=_optional(row, "title_romaji"),
+        title_english=_optional(row, "title_english"),
+        title_kanji=_optional(row, "title_kanji"),
+        title_synonym=_optional(row, "title_synonym"),
+        title_other=_optional(row, "title_other"),
+        eptitle_romaji=_optional(row, "eptitle_romaji"),
+        eptitle_english=_optional(row, "eptitle_english"),
+        eptitle_kanji=_optional(row, "eptitle_kanji"),
+        ep_count=_optional(row, "ep_count"),
+        ep_highest=_optional(row, "ep_highest"),
+        year_begin=_optional(row, "year_begin"),
+        year_end=_optional(row, "year_end"),
+        categories=_optional(row, "categories"),
+        anime_type=_optional(row, "anime_type"),
+        deprecated=_optional(row, "deprecated"),
+        censored=_optional(row, "censored"),
+        anidb_filename=_optional(row, "anidb_filename"),
+        crc=_optional(row, "crc"),
+        video_resolution=_optional(row, "video_resolution"),
+        audio_codec=_optional(row, "audio_codec"),
+        video_codec=_optional(row, "video_codec"),
+        audio_langs=_optional(row, "audio_langs"),
+        subtitle_langs=_optional(row, "subtitle_langs"),
+        duration=_optional(row, "duration"),
+        watched=_optional(row, "watched"),
     )

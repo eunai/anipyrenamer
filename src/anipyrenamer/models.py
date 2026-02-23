@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 @dataclass
 class FileInfo:
-    """FILE command response: fid, aid, eid, gid, quality, source, etc."""
+    """FILE + ANIME + EP + GROUP data; all optional fields cached for template tokens."""
 
     fid: int
     aid: int
@@ -18,10 +18,40 @@ class FileInfo:
     quality: str
     source: str
     group_name: str = ""
+    group_short_name: str = ""
     anime_title: str = ""
     episode_number: str = ""
     episode_title: str = ""
     file_version: str = ""
+    # Anime titles (AniAdd: ATr, ATe, ATk, ATs, ATo)
+    title_romaji: str = ""
+    title_english: str = ""
+    title_kanji: str = ""
+    title_synonym: str = ""
+    title_other: str = ""
+    # Episode titles (ETr, ETe, ETk)
+    eptitle_romaji: str = ""
+    eptitle_english: str = ""
+    eptitle_kanji: str = ""
+    # Anime info
+    ep_count: str = ""
+    ep_highest: str = ""
+    year_begin: str = ""
+    year_end: str = ""
+    categories: str = ""
+    anime_type: str = ""
+    # File flags/info
+    deprecated: str = ""
+    censored: str = ""
+    anidb_filename: str = ""
+    crc: str = ""
+    video_resolution: str = ""
+    audio_codec: str = ""
+    video_codec: str = ""
+    audio_langs: str = ""
+    subtitle_langs: str = ""
+    duration: str = ""
+    watched: str = ""
 
 
 @dataclass

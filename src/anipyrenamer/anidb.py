@@ -130,67 +130,76 @@ class AniDBClient:
             return None
         info = _parse_file_response(lines[1].strip(), size=size, ed2k=ed2k)
         if info.aid:
-            info.anime_title = self._anime_title(info.aid) or info.anime_title
+            self._fill_anime_info(info)
         if info.eid:
-            epno, eptitle = self._episode_info(info.eid)
-            if epno:
-                info.episode_number = epno
-            if eptitle:
-                info.episode_title = eptitle
+            self._fill_episode_info(info)
         if info.gid:
-            info.group_name = self._group_name(info.gid) or info.group_name
+            short, long_name = self._group_names(info.gid)
+            if short or long_name:
+                info.group_short_name = short or long_name
+                info.group_name = long_name or short
         return info
 
-    def _anime_title(self, aid: int) -> str:
-        """ANIME aid=; return english or romaji name."""
-        if not self._session:
-            return ""
-        reply = self._send_recv(f"ANIME aid={aid}&s={self._session}")
-        if "230 ANIME" not in reply:
-            return ""
-        lines = reply.split("\n")
-        if len(lines) < 2:
-            return ""
-        parts = lines[1].strip().split("|")
-        # Default format: aid|eps|...|year|type|romaji|kanji|english|...
+    def _fill_anime_info(self, info: FileInfo) -> None:
+        """ANIME aid=; fill title variants, year, type, categories, ep_count."""
+        if not self._session or not info.aid:
+            return
+        reply = self._send_recv(f"ANIME aid={info.aid}&s={self._session}")
+        if "230 ANIME" not in reply or "\n" not in reply:
+            return
+        parts = reply.split("\n")[1].strip().split("|")
+        # aid|eps|ep count|special cnt|rating|votes|...|year|type|romaji|kanji|english|other|short names|synonyms|category list
+        if len(parts) >= 19:
+            info.ep_count = (parts[2] or "").strip()
+            info.year_begin = (parts[10] or "").strip()
+            info.year_end = info.year_begin  # single year in default format
+            info.anime_type = (parts[11] or "").strip()
+            info.title_romaji = (parts[12] or "").strip()
+            info.title_kanji = (parts[13] or "").strip()
+            info.title_english = (parts[14] or "").strip()
+            info.title_other = (parts[15] or "").strip()
+            info.title_synonym = (parts[17] or "").strip()
+            info.categories = (parts[18] or "").strip()
         if len(parts) >= 15:
-            return (parts[14] or parts[12] or "").strip()  # english then romaji
-        if len(parts) >= 13:
-            return (parts[12] or "").strip()
-        return ""
+            info.title_romaji = info.title_romaji or (parts[12] or "").strip()
+            info.title_english = info.title_english or (parts[14] or "").strip()
+        if not info.anime_title:
+            info.anime_title = info.title_english or info.title_romaji or info.title_kanji or ""
 
-    def _episode_info(self, eid: int) -> tuple[str, str]:
-        """EPISODE eid=; return (epno, episode_title)."""
-        if not self._session:
-            return ("", "")
-        reply = self._send_recv(f"EPISODE eid={eid}&s={self._session}")
-        if "240 EPISODE" not in reply:
-            return ("", "")
-        lines = reply.split("\n")
-        if len(lines) < 2:
-            return ("", "")
-        parts = lines[1].strip().split("|")
+    def _fill_episode_info(self, info: FileInfo) -> None:
+        """EPISODE eid=; fill epno, episode title variants."""
+        if not self._session or not info.eid:
+            return
+        reply = self._send_recv(f"EPISODE eid={info.eid}&s={self._session}")
+        if "240 EPISODE" not in reply or "\n" not in reply:
+            return
+        parts = reply.split("\n")[1].strip().split("|")
         # eid|aid|length|rating|votes|epno|eng|romaji|kanji|aired|type
-        if len(parts) >= 8:
-            return (parts[5] or "", parts[6] or "")
-        if len(parts) >= 6:
-            return (parts[5] or "", "")
-        return ("", "")
+        if len(parts) >= 9:
+            info.episode_number = info.episode_number or (parts[5] or "").strip()
+            info.eptitle_english = (parts[6] or "").strip()
+            info.eptitle_romaji = (parts[7] or "").strip()
+            info.eptitle_kanji = (parts[8] or "").strip()
+        if len(parts) >= 7:
+            info.episode_title = info.episode_title or (parts[6] or "").strip()
+        if not info.episode_title and info.eptitle_english:
+            info.episode_title = info.eptitle_english
 
-    def _group_name(self, gid: int) -> str:
-        """GROUP gid=; return group name."""
+    def _group_names(self, gid: int) -> tuple[str, str]:
+        """GROUP gid=; return (short_name, long_name). 250 GROUP: gid|...|name|short|..."""
         if not self._session or gid <= 0:
-            return ""
+            return ("", "")
         reply = self._send_recv(f"GROUP gid={gid}&s={self._session}")
         if "250 GROUP" not in reply:
-            return ""
+            return ("", "")
         lines = reply.split("\n")
         if len(lines) < 2:
-            return ""
+            return ("", "")
         parts = lines[1].strip().split("|")
-        if len(parts) >= 6:
-            return (parts[5] or "").strip()
-        return ""
+        # name=parts[5], short=parts[6]
+        long_name = (parts[5] or "").strip() if len(parts) > 5 else ""
+        short_name = (parts[6] or "").strip() if len(parts) > 6 else ""
+        return (short_name, long_name)
 
     def __enter__(self) -> AniDBClient:
         return self
@@ -243,6 +252,7 @@ def _parse_file_response(data_line: str, size: int, ed2k: str) -> FileInfo:
         quality=quality,
         source=source,
         group_name=group_name,
+        group_short_name="",
         anime_title=anime_title,
         episode_number=episode_number,
         episode_title=episode_title,
