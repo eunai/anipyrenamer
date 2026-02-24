@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from rich.console import Console
+from rich.markup import escape as rich_escape
 from rich.table import Table
 from rich import box
 
@@ -41,7 +42,12 @@ def preview_plan(items: list[RenameItem], console: Console | None = None) -> Non
     table.add_column("Type", style="dim")  # Read-only: anime type (tv, movie, ova, web, etc.)
     for item in sorted(items, key=_plan_sort_key):
         type_display = item.anime_type or "—"
-        table.add_row(item.old_path, item.new_path, type_display)
+        # Escape brackets so Rich doesn't treat e.g. [Hi10] or [anidb-12345] as markup
+        table.add_row(
+            rich_escape(item.old_path),
+            rich_escape(item.new_path),
+            rich_escape(type_display),
+        )
     out.print(table)
 
 
