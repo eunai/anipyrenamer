@@ -77,3 +77,4 @@ class RenameItem:
     old_path: str
     new_path: str
     kind: RenameKind = RenameKind.FILE
+    anime_type: str = ""  # For preview table (tv, movie, ova, web, etc.); from %anime_type%

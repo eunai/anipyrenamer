@@ -8,6 +8,7 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
+from rich import box
 
 from anipyrenamer.models import RenameItem, RenameKind
 
@@ -28,11 +29,18 @@ def _plan_sort_key(item: RenameItem) -> tuple[str, int, str]:
 def preview_plan(items: list[RenameItem], console: Console | None = None) -> None:
     """Print rename plan as a table (old_path -> new_path). Rows sorted by destination folder then episode."""
     out = console or Console()
-    table = Table(title="Rename plan")
+    table = Table(
+        title="Rename Plan",
+        title_style="bold cyan",
+        box=box.ROUNDED,
+        border_style="dim",
+    )
     table.add_column("Current", style="dim")
     table.add_column("New", style="green")
+    table.add_column("Type", style="dim")  # Read-only: anime type (tv, movie, ova, web, etc.)
     for item in sorted(items, key=_plan_sort_key):
-        table.add_row(item.old_path, item.new_path)
+        type_display = item.anime_type or "—"
+        table.add_row(item.old_path, item.new_path, type_display)
     out.print(table)
 
 
@@ -51,6 +59,7 @@ def apply_plan(
     db_path: str,
     *,
     dry_run: bool = False,
+    progress_callback: Callable[[int, int, RenameItem, bool | None], None] | None = None,
 ) -> None:
     """
     Move each file old_path to new_path; create parent dirs if needed.
@@ -58,21 +67,28 @@ def apply_plan(
     (depth descending so parent dirs can become empty). No implicit overwrite:
     if destination already exists and is not the source, the item is skipped.
     If dry_run, do nothing.
+    progress_callback: optional (current_1based_index, total, item, skipped).
+      Called at start of each item with skipped=None; at end with skipped=True/False for CLI progress UI.
     """
     if dry_run:
         return
     file_items = [i for i in items if i.kind == RenameKind.FILE]
+    total = len(file_items)
     applied_source_parents: set[Path] = set()
-    for item in file_items:
+    for idx, item in enumerate(file_items, start=1):
+        if progress_callback:
+            progress_callback(idx, total, item, None)  # started
         src = Path(item.old_path)
         dst = Path(item.new_path)
-        if not src.exists():
-            continue
-        if dst.exists() and not _same_path(src, dst):
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dst))
-        applied_source_parents.add(src.parent)
+        skipped = True
+        if src.exists():
+            if not (dst.exists() and not _same_path(src, dst)):
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                applied_source_parents.add(src.parent)
+                skipped = False
+        if progress_callback:
+            progress_callback(idx, total, item, skipped)  # done
     # Remove empty source dirs (deepest first)
     for dir_path in sorted(applied_source_parents, key=lambda p: len(p.parts), reverse=True):
         if dir_path.exists() and dir_path.is_dir() and not any(dir_path.iterdir()):

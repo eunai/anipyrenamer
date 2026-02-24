@@ -81,10 +81,22 @@ def build_plan(
         parent = video_path.parent.parent / folder_name
     new_video = parent / f"{base_name}"
     items: list[RenameItem] = [
-        RenameItem(old_path=group.video_path, new_path=str(new_video), kind=RenameKind.FILE)
+        RenameItem(
+            old_path=group.video_path,
+            new_path=str(new_video),
+            kind=RenameKind.FILE,
+            anime_type=info.anime_type or "",
+        )
     ]
     for old_side in group.sidecar_paths:
         p = Path(old_side)
         new_side = parent / f"{base_name.removesuffix(ext)}{p.suffix}"
-        items.append(RenameItem(old_path=old_side, new_path=str(new_side), kind=RenameKind.FILE))
+        items.append(
+            RenameItem(
+                old_path=old_side,
+                new_path=str(new_side),
+                kind=RenameKind.FILE,
+                anime_type=info.anime_type or "",
+            )
+        )
     return items

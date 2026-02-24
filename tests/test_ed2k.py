@@ -33,3 +33,18 @@ def test_ed2k_deterministic(tmp_path: Path) -> None:
     f = tmp_path / "same"
     f.write_bytes(b"x" * 1000)
     assert compute_ed2k(str(f)) == compute_ed2k(str(f))
+
+
+def test_ed2k_progress_callback(tmp_path: Path) -> None:
+    """progress_callback is called with (bytes_read, total) at start and after each chunk."""
+    f = tmp_path / "progress"
+    f.write_bytes(b"x" * 100)
+    calls: list[tuple[int, int]] = []
+
+    def cb(bytes_read: int, total: int) -> None:
+        calls.append((bytes_read, total))
+
+    compute_ed2k(str(f), progress_callback=cb)
+    assert len(calls) >= 1
+    assert calls[0] == (0, 100)
+    assert calls[-1] == (100, 100)
