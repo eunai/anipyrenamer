@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -10,14 +11,27 @@ from rich.table import Table
 
 from anipyrenamer.models import RenameItem, RenameKind
 
+# First 1-4 digit number in filename (episode heuristic); used for display sort only.
+_EPISODE_RE = re.compile(r"\d{1,4}")
+
+
+def _plan_sort_key(item: RenameItem) -> tuple[str, int, str]:
+    """Sort key for preview table: (folder_name_casefold, episode_int, new_path)."""
+    p = Path(item.new_path)
+    folder = p.parent.name.casefold()
+    stem = p.stem
+    match = _EPISODE_RE.search(stem)
+    episode = int(match.group()) if match else 0
+    return (folder, episode, item.new_path)
+
 
 def preview_plan(items: list[RenameItem], console: Console | None = None) -> None:
-    """Print rename plan as a table (old_path -> new_path)."""
+    """Print rename plan as a table (old_path -> new_path). Rows sorted by destination folder then episode."""
     out = console or Console()
     table = Table(title="Rename plan")
     table.add_column("Current", style="dim")
     table.add_column("New", style="green")
-    for item in items:
+    for item in sorted(items, key=_plan_sort_key):
         table.add_row(item.old_path, item.new_path)
     out.print(table)
 

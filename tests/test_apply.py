@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from anipyrenamer.apply import apply_plan, preview_plan
+from anipyrenamer.apply import _plan_sort_key, apply_plan, preview_plan
 from anipyrenamer.models import RenameItem, RenameKind
 
 
@@ -15,6 +15,24 @@ def test_preview_plan_no_crash(capsys: pytest.CaptureFixture[str]) -> None:
     preview_plan(items)
     # Rich prints to console; just ensure no exception
     assert True
+
+
+def test_preview_plan_sorted_by_folder_then_episode() -> None:
+    """Preview table order is by destination folder (case-insensitive) then episode number."""
+    root = "C:\\anime"
+    items = [
+        RenameItem("/any/222222.mkv", f"{root}\\Dan Da Dan [Subs]\\Dan Da Dan 01 - First [Subs].mkv"),
+        RenameItem("/any/11.mkv", f"{root}\\Blue Lock [SEV]\\Blue Lock 02 - Monster [SEV].mkv"),
+        RenameItem("/any/other.mkv", f"{root}\\Blue Lock [SEV]\\Blue Lock 01 - Dream [SEV].mkv"),
+        RenameItem("/any/x.mkv", f"{root}\\Nana [EMBER]\\Nana 01 - Prologue [EMBER].mkv"),
+    ]
+    ordered = sorted(items, key=_plan_sort_key)
+    new_paths = [item.new_path for item in ordered]
+    # Blue Lock (01 then 02), then Dan Da Dan 01, then Nana 01
+    assert "Blue Lock 01" in new_paths[0]
+    assert "Blue Lock 02" in new_paths[1]
+    assert "Dan Da Dan 01" in new_paths[2]
+    assert "Nana 01" in new_paths[3]
 
 
 def test_apply_plan_dry_run_does_nothing(tmp_path: Path) -> None:
