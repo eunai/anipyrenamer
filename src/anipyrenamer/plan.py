@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem
+from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKind
 from anipyrenamer.naming import render_template
 
 
@@ -63,8 +63,9 @@ def build_plan(
     """
     Build (old_path, new_path) for the video and its sidecars.
     If dest_root is None, new paths are in-place (same dir as video).
-    When folder_template is set and dest_root is None, also add one RenameItem for the parent folder
-    (CLI deduplicates by old_path when multiple episodes share the same folder).
+    When folder_template is set and dest_root is None, file new_paths use the target folder
+    (parent.parent / folder_name); apply will create that dir, move files, and remove empty dirs.
+    No directory RenameItem is emitted.
     """
     video_path = Path(group.video_path)
     ext = video_path.suffix or ""
@@ -75,15 +76,15 @@ def build_plan(
     parent = video_path.parent
     if dest_root:
         parent = Path(dest_root)
+    elif folder_template is not None:
+        folder_name = render_template(folder_template, **_info_kwargs(info, extension=""))
+        parent = video_path.parent.parent / folder_name
     new_video = parent / f"{base_name}"
-    items: list[RenameItem] = [RenameItem(old_path=group.video_path, new_path=str(new_video))]
+    items: list[RenameItem] = [
+        RenameItem(old_path=group.video_path, new_path=str(new_video), kind=RenameKind.FILE)
+    ]
     for old_side in group.sidecar_paths:
         p = Path(old_side)
         new_side = parent / f"{base_name.removesuffix(ext)}{p.suffix}"
-        items.append(RenameItem(old_path=old_side, new_path=str(new_side)))
-    if folder_template is not None and dest_root is None:
-        parent_dir = video_path.parent
-        folder_name = render_template(folder_template, **_info_kwargs(info, extension=""))
-        new_parent = parent_dir.parent / folder_name
-        items.append(RenameItem(old_path=str(parent_dir), new_path=str(new_parent)))
+        items.append(RenameItem(old_path=old_side, new_path=str(new_side), kind=RenameKind.FILE))
     return items

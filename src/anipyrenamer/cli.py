@@ -23,23 +23,12 @@ from anipyrenamer.ed2k import compute_ed2k
 from anipyrenamer.models import RenameItem
 from anipyrenamer.naming import DEFAULT_FILE_TEMPLATE, DEFAULT_FOLDER_TEMPLATE
 from anipyrenamer.plan import build_plan
+from anipyrenamer.validation import (
+    detect_destination_conflicts,
+    flatten_and_validate_folder_renames,
+)
 
 load_dotenv()
-
-
-def _flatten_and_dedupe_renames(
-    all_items: list[tuple[list[RenameItem], str]],
-) -> list[RenameItem]:
-    """Flatten per-group renames and deduplicate by old_path (folder renames repeat per episode)."""
-    seen_old: set[str] = set()
-    flat: list[RenameItem] = []
-    for items, _ in all_items:
-        for item in items:
-            if item.old_path in seen_old:
-                continue
-            seen_old.add(item.old_path)
-            flat.append(item)
-    return flat
 
 
 def main() -> None:
@@ -231,7 +220,13 @@ def main() -> None:
         console.print("[yellow]No renames to apply.[/yellow]")
         sys.exit(0)
 
-    flat_items = _flatten_and_dedupe_renames(all_items)
+    flat_items, folder_conflicts = flatten_and_validate_folder_renames(all_items)
+    for msg in folder_conflicts:
+        console.print(f"[yellow]{msg}[/yellow]")
+
+    dest_conflicts = detect_destination_conflicts(flat_items)
+    for msg in dest_conflicts:
+        console.print(f"[dim]{msg}[/dim]")
 
     preview_plan(flat_items, console=console)
 
@@ -251,7 +246,7 @@ def main() -> None:
         console.print("Aborted.")
         sys.exit(0)
 
-    apply_plan(flat_items, db_path, dry_run=False, record=True)
+    apply_plan(flat_items, db_path, dry_run=False)
     console.print("[green]Renames applied.[/green]")
     sys.exit(0)
 

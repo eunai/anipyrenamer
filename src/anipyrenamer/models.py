@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+
+
+class RenameKind(str, Enum):
+    """Whether a rename item is a file or a directory (determines apply order and validation)."""
+
+    FILE = "file"
+    DIRECTORY = "directory"
 
 
 @dataclass
@@ -64,7 +72,8 @@ class DiscoveredGroup:
 
 @dataclass
 class RenameItem:
-    """Single rename: old_path -> new_path."""
+    """Single rename: old_path -> new_path. kind determines apply order (files first, then folders)."""
 
     old_path: str
     new_path: str
+    kind: RenameKind = RenameKind.FILE

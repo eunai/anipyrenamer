@@ -1,15 +1,14 @@
-"""Preview (Rich) and apply renames; record in rename_history."""
+"""Preview (Rich) and apply renames."""
 
 from __future__ import annotations
 
 import shutil
-import uuid
 from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
-from anipyrenamer.models import RenameItem
+from anipyrenamer.models import RenameItem, RenameKind
 
 
 def preview_plan(items: list[RenameItem], console: Console | None = None) -> None:
@@ -23,44 +22,44 @@ def preview_plan(items: list[RenameItem], console: Console | None = None) -> Non
     out.print(table)
 
 
+def _same_path(a: Path, b: Path) -> bool:
+    """True if both paths exist and refer to the same file/dir (resolve for symlinks)."""
+    if not a.exists() or not b.exists():
+        return False
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
+
+
 def apply_plan(
     items: list[RenameItem],
     db_path: str,
     *,
     dry_run: bool = False,
-    record: bool = True,
-    batch_id: str | None = None,
 ) -> None:
     """
-    Move each old_path to new_path; create parent dirs if needed.
-    Applies file renames first, then folder renames, so folder renames do not invalidate paths.
-    If record is True, append to rename_history. If dry_run, do nothing.
+    Move each file old_path to new_path; create parent dirs if needed.
+    Only FILE items are applied. After moves, remove empty source directories
+    (depth descending so parent dirs can become empty). No implicit overwrite:
+    if destination already exists and is not the source, the item is skipped.
+    If dry_run, do nothing.
     """
     if dry_run:
         return
-    file_items: list[RenameItem] = []
-    folder_items: list[RenameItem] = []
-    for item in items:
-        src = Path(item.old_path)
-        if not src.exists():
-            continue
-        if src.is_file():
-            file_items.append(item)
-        else:
-            folder_items.append(item)
-    bid = batch_id or str(uuid.uuid4())
-    to_record: list[tuple[str, str]] = []
-    for item in file_items + folder_items:
+    file_items = [i for i in items if i.kind == RenameKind.FILE]
+    applied_source_parents: set[Path] = set()
+    for item in file_items:
         src = Path(item.old_path)
         dst = Path(item.new_path)
         if not src.exists():
             continue
+        if dst.exists() and not _same_path(src, dst):
+            continue
         dst.parent.mkdir(parents=True, exist_ok=True)
-        if dst.exists() and dst.resolve() != src.resolve():
-            dst.unlink()
         shutil.move(str(src), str(dst))
-        to_record.append((item.old_path, item.new_path))
-    if record and to_record:
-        from anipyrenamer.cache import record_renames
-
-        record_renames(db_path, to_record, batch_id=bid)
+        applied_source_parents.add(src.parent)
+    # Remove empty source dirs (deepest first)
+    for dir_path in sorted(applied_source_parents, key=lambda p: len(p.parts), reverse=True):
+        if dir_path.exists() and dir_path.is_dir() and not any(dir_path.iterdir()):
+            dir_path.rmdir()

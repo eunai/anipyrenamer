@@ -12,7 +12,6 @@ from anipyrenamer.cache import (
     get_file_info,
     get_db_path,
     init_db,
-    record_renames,
     set_file_info,
 )
 from anipyrenamer.models import FileInfo
@@ -50,16 +49,6 @@ def test_get_file_info_missing_returns_none(tmp_path: Path) -> None:
     db = str(tmp_path / "test.sqlite")
     init_db(db)
     assert get_file_info(db, 999, "x" * 32) is None
-
-
-def test_record_renames(tmp_path: Path) -> None:
-    db = str(tmp_path / "test.sqlite")
-    init_db(db)
-    record_renames(db, [("/old/path.mkv", "/new/path.mkv")])
-    # Just ensure no exception; could query rename_history
-    set_file_info(db, FileInfo(1, 2, 3, 4, 100, "e" * 32, "high", "TV"))
-    got = get_file_info(db, 100, "e" * 32)
-    assert got is not None
 
 
 def test_clear_file_anidb_entries(tmp_path: Path) -> None:

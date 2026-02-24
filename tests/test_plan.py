@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem
+from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKind
 from anipyrenamer.plan import build_plan
 
 
@@ -30,6 +30,7 @@ def test_build_plan_in_place() -> None:
     )
     items = build_plan(group, info, "%title% - %epno% - %eptitle% [%group%]%ext%", dest_root=None)
     assert len(items) == 2
+    assert all(i.kind == RenameKind.FILE for i in items)
     assert items[0].old_path == "/dir/Show - 01.mkv"
     assert items[0].new_path.endswith(".mkv")
     # Title sanitized to no spaces; epno and content present
@@ -52,7 +53,7 @@ def test_build_plan_with_dest() -> None:
 
 
 def test_build_plan_with_folder_template_in_place() -> None:
-    """With folder_template set and in-place, plan includes one folder RenameItem and file items."""
+    """With folder_template set and in-place, plan has file items under target folder; no directory item."""
     group = DiscoveredGroup(
         video_path="/root/MyDir/ep01.mkv",
         sidecar_paths=(),
@@ -78,15 +79,16 @@ def test_build_plan_with_folder_template_in_place() -> None:
         dest_root=None,
         folder_template="%title% [%group%]%ext%",
     )
-    # One video item + one folder item
-    assert len(items) >= 2
-    parent_dir = str(Path(group.video_path).parent)
-    file_items = [i for i in items if i.old_path.endswith(".mkv")]
-    folder_items = [i for i in items if i.old_path == parent_dir]
+    assert len(items) == 1
+    file_items = [i for i in items if i.kind == RenameKind.FILE]
+    folder_items = [i for i in items if i.kind == RenameKind.DIRECTORY]
     assert len(file_items) == 1
-    assert len(folder_items) == 1
-    assert "My Show" in folder_items[0].new_path or "My-Show" in folder_items[0].new_path
-    assert "Subs" in folder_items[0].new_path
+    assert len(folder_items) == 0
+    # File new_path is under target folder (parent.parent / folder_name)
+    new_path = Path(file_items[0].new_path)
+    assert new_path.parent.name != "MyDir"  # not in original dir
+    assert "Subs" in new_path.parent.name
+    assert file_items[0].old_path == "/root/MyDir/ep01.mkv"
 
 
 def test_build_plan_folder_template_with_dest_omits_folder_rename() -> None:
@@ -106,7 +108,7 @@ def test_build_plan_folder_template_with_dest_omits_folder_rename() -> None:
 
 
 def test_build_plan_two_groups_same_dir_same_folder_target() -> None:
-    """Two episodes in the same folder produce same folder old_path (CLI deduplicates)."""
+    """Two episodes in the same folder produce file items with the same target parent (no directory items)."""
     info = FileInfo(
         fid=1, aid=2, eid=3, gid=4, size=100, ed2k="x" * 32,
         quality="high", source="TV",
@@ -116,8 +118,6 @@ def test_build_plan_two_groups_same_dir_same_folder_target() -> None:
     group2 = DiscoveredGroup(video_path="/root/AnimeDir/ep02.mkv", sidecar_paths=())
     items1 = build_plan(group1, info, "%title% - %epno%%ext%", folder_template="%title% [%group%]%ext%")
     items2 = build_plan(group2, info, "%title% - %epno%%ext%", folder_template="%title% [%group%]%ext%")
-    parent_dir = str(Path(group1.video_path).parent)
-    folder1 = [i for i in items1 if i.old_path == parent_dir][0]
-    folder2 = [i for i in items2 if i.old_path == parent_dir][0]
-    assert folder1.old_path == folder2.old_path
-    assert folder1.new_path == folder2.new_path
+    assert len(items1) == 1 and len(items2) == 1
+    assert items1[0].kind == RenameKind.FILE and items2[0].kind == RenameKind.FILE
+    assert Path(items1[0].new_path).parent == Path(items2[0].new_path).parent

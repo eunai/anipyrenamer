@@ -1,10 +1,9 @@
-"""SQLite cache: file_anidb (lookup by size+ed2k), rename_history (for apply/undo)."""
+"""SQLite cache: file_anidb (lookup by size+ed2k)."""
 
 from __future__ import annotations
 
 import sqlite3
 import time
-import uuid
 from pathlib import Path
 
 from anipyrenamer.models import FileInfo
@@ -84,21 +83,11 @@ def init_db(db_path: str) -> None:
         for col in FILE_ANIDB_EXTRA_COLUMNS:
             if col not in existing:
                 conn.execute(f"ALTER TABLE file_anidb ADD COLUMN {col} TEXT")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS rename_history (
-                old_path TEXT NOT NULL,
-                new_path TEXT NOT NULL,
-                applied_at REAL NOT NULL,
-                batch_id TEXT NOT NULL
-            )
-            """
-        )
         conn.commit()
 
 
 def clear_file_anidb_cache(db_path: str) -> None:
-    """Delete all rows from file_anidb so lookups will refetch from AniDB. Keeps rename_history."""
+    """Delete all rows from file_anidb so lookups will refetch from AniDB."""
     with sqlite3.connect(db_path) as conn:
         conn.execute("DELETE FROM file_anidb")
         conn.commit()
@@ -197,19 +186,6 @@ def set_file_info(db_path: str, info: FileInfo) -> None:
                 info.watched,
             ),
         )
-        conn.commit()
-
-
-def record_renames(db_path: str, items: list[tuple[str, str]], batch_id: str | None = None) -> None:
-    """Append rename_history rows. batch_id generated if not provided."""
-    bid = batch_id or str(uuid.uuid4())
-    now = time.time()
-    with sqlite3.connect(db_path) as conn:
-        for old_path, new_path in items:
-            conn.execute(
-                "INSERT INTO rename_history (old_path, new_path, applied_at, batch_id) VALUES (?, ?, ?, ?)",
-                (old_path, new_path, now, bid),
-            )
         conn.commit()
 
 
