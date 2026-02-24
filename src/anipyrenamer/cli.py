@@ -378,14 +378,8 @@ def _do_hashing_lookup_plan_apply(
     console.print("[bold]Apply[/bold]")
     file_items = [i for i in flat_items if i.kind == RenameKind.FILE]
     total_apply = len(file_items)
-    # One overall bar (no ETA at top); one live line for current file (updates in place, no stacking).
+    # One overall bar (Renaming N/M) only; no per-file line.
     progress_apply_overall = Progress(
-        SpinnerColumn(),
-        BarColumn(bar_width=24, style="blue", complete_style="green"),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    )
-    progress_apply_file = Progress(
         SpinnerColumn(),
         BarColumn(bar_width=24, style="blue", complete_style="green"),
         TextColumn("[progress.description]{task.description}"),
@@ -395,17 +389,9 @@ def _do_hashing_lookup_plan_apply(
         f"Renaming 0/{total_apply}",
         total=total_apply,
     )
-    apply_file_task = progress_apply_file.add_task("", total=1, visible=False)
 
     def apply_progress(idx: int, total: int, item: RenameItem, skipped: bool | None) -> None:
         if skipped is None:
-            progress_apply_file.update(
-                apply_file_task,
-                description=f"[yellow]{item.old_path}[/yellow] → [green]{item.new_path}[/green]",
-                total=1,
-                completed=0,
-                visible=True,
-            )
             progress_apply_overall.update(
                 overall_apply_task,
                 description=f"Renaming {idx - 1}/{total}",
@@ -413,11 +399,6 @@ def _do_hashing_lookup_plan_apply(
             if live_apply_ref[0] is not None:
                 live_apply_ref[0].refresh()
         else:
-            progress_apply_file.update(
-                apply_file_task,
-                completed=1,
-                description="[yellow]⊘ skipped[/yellow]" if skipped else f"[green]✓[/green] {item.old_path} → {item.new_path}",
-            )
             progress_apply_overall.advance(overall_apply_task)
             progress_apply_overall.update(
                 overall_apply_task,
@@ -427,7 +408,7 @@ def _do_hashing_lookup_plan_apply(
                 live_apply_ref[0].refresh()
 
     live_apply_ref: list[Live | None] = [None]
-    apply_group = Group(progress_apply_overall, progress_apply_file)
+    apply_group = Group(progress_apply_overall)
     with Live(apply_group, console=console, refresh_per_second=8) as live_apply:
         live_apply_ref[0] = live_apply
         apply_plan(

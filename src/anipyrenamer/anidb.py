@@ -118,12 +118,23 @@ class AniDBClient:
         return (False, reply)
 
     def logout(self) -> None:
-        """LOGOUT and close socket."""
-        if self._session:
+        """LOGOUT and close socket. Uses a short timeout so the server reliably sees LOGOUT
+        (avoids 'useless connect' when LOGOUT would otherwise time out)."""
+        if self._session and self._sock:
+            prev_timeout = self._sock.gettimeout()
             try:
-                self._send_recv(f"LOGOUT s={self._session}")
-            except Exception:
-                pass
+                self._sock.settimeout(5.0)
+                for _ in range(2):
+                    try:
+                        self._send_recv(f"LOGOUT s={self._session}")
+                        break
+                    except Exception:
+                        self._sock.settimeout(5.0)
+            finally:
+                try:
+                    self._sock.settimeout(prev_timeout)
+                except Exception:
+                    pass
             self._session = None
         if self._sock:
             try:
