@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from rich.console import Console
 from rich.table import Table

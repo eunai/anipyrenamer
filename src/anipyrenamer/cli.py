@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
+from typing import Any
 
 from dotenv import load_dotenv
 from rich.console import Console, Group
@@ -39,6 +41,17 @@ from anipyrenamer.validation import (
 )
 
 load_dotenv()
+
+# Exit code when user interrupts (e.g. Ctrl+C)
+EXIT_INTERRUPTED = 130
+
+
+def _disconnect_anidb(client: Any, console: Console, had_session: bool) -> None:
+    """Log out from AniDB and print disconnect message only when we had a session."""
+    if client is not None:
+        client.logout()
+    if had_session:
+        console.print("[cyan]✓ Disconnected from AniDB.[/cyan]")
 
 
 def main() -> None:
@@ -153,7 +166,8 @@ def main() -> None:
         console.print(f"[dim]Cleared AniDB cache for {n} file(s) in this scan.[/dim]")
 
     # Resolve AniDB client only when not offline
-    client = None
+    client: Any = None
+    had_session = False
     if not args.offline:
         from anipyrenamer.anidb import AniDBConfig, AniDBClient
 
@@ -164,6 +178,7 @@ def main() -> None:
                 ok, msg = client.login()
                 if ok:
                     console.print("[green]✓ Connected to AniDB.[/green]")
+                    had_session = True
                 if not ok:
                     if msg and "555" in msg and "BANNED" in msg.upper():
                         console.print(
@@ -172,7 +187,7 @@ def main() -> None:
                         )
                     else:
                         console.print("[red]AniDB login failed.[/red]")
-                    client.logout()
+                    _disconnect_anidb(client, console, False)
                     sys.exit(1)
             except TimeoutError:
                 console.print(
@@ -180,13 +195,51 @@ def main() -> None:
                     "You may be rate-limited or temporarily banned. "
                     "Try again later or use [bold]--offline[/bold] to use cache only."
                 )
-                client.logout()
+                _disconnect_anidb(client, console, False)
                 sys.exit(1)
         else:
             console.print(
                 "[yellow]ANIDB_USERNAME/ANIDB_PASSWORD not set; using cache only.[/yellow]"
             )
 
+    # Ensure LOGOUT is sent on any exit (Ctrl+C, exception, normal)
+    sigterm = getattr(signal, "SIGTERM", None)
+    if sigterm is not None:
+
+        def _sigterm_to_interrupt(signum: int, frame: Any) -> None:
+            raise KeyboardInterrupt
+
+        signal.signal(sigterm, _sigterm_to_interrupt)
+
+    try:
+        _run_after_anidb_ready(args, client, had_session, console, db_path, groups)
+    except KeyboardInterrupt:
+        sys.exit(EXIT_INTERRUPTED)
+
+
+def _run_after_anidb_ready(
+    args: argparse.Namespace,
+    client: Any,
+    had_session: bool,
+    console: Console,
+    db_path: str,
+    groups: list[Any],
+) -> None:
+    """Run hashing, lookup, plan, preview, apply. Guarantees AniDB logout in finally."""
+    try:
+        _do_hashing_lookup_plan_apply(args, client, console, db_path, groups)
+    finally:
+        _disconnect_anidb(client, console, had_session)
+
+
+def _do_hashing_lookup_plan_apply(
+    args: argparse.Namespace,
+    client: Any,
+    console: Console,
+    db_path: str,
+    groups: list[Any],
+) -> None:
+    """Hashing and lookup, then plan, preview, and optionally apply."""
     console.print("[bold]Hashing and lookup[/bold]")
     all_items: list[tuple[list[RenameItem], str]] = []  # (items, batch_id placeholder)
     # Overall: bar only (no ETA at top). Per-file: single live line (path + bar + MB + speed + ETA).
@@ -266,10 +319,6 @@ def main() -> None:
                 overall_task,
                 description=f"Hashing and lookup {i + 1}/{len(groups)}",
             )
-
-    if client:
-        console.print("[cyan]✓ Disconnected from AniDB.[/cyan]")
-        client.logout()
 
     if not all_items:
         console.print("[yellow]No renames to apply.[/yellow]")

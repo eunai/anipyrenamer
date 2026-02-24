@@ -1,12 +1,13 @@
-"""CLI tests: --help, no paths, dry-run with no videos."""
+"""CLI tests: --help, no paths, dry-run with no videos, interrupt logout."""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from anipyrenamer.cli import main
+from anipyrenamer.cli import EXIT_INTERRUPTED, main
 from anipyrenamer.models import RenameItem, RenameKind
 from anipyrenamer.validation import flatten_and_validate_folder_renames
 
@@ -44,6 +45,28 @@ def test_cli_dry_run_empty_dir(tmp_path: Path) -> None:
         # No SystemExit: main() runs to end and exits 0
     except SystemExit as e:
         assert e.code == 0
+    finally:
+        sys.argv = orig_argv
+
+
+def test_cli_keyboard_interrupt_calls_logout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """On KeyboardInterrupt during hashing/lookup, AniDB client logout is called and exit is 130."""
+    (tmp_path / "a.mkv").write_bytes(b"x")
+    monkeypatch.setenv("ANIDB_USERNAME", "u")
+    monkeypatch.setenv("ANIDB_PASSWORD", "p")
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", str(tmp_path)]
+        with patch("anipyrenamer.anidb.AniDBClient") as MockAniDBClient:
+            mock_client = MagicMock()
+            MockAniDBClient.return_value = mock_client
+            mock_client.login.return_value = (True, "")
+            mock_client._session = "fake"
+            with patch("anipyrenamer.cli.compute_ed2k", side_effect=KeyboardInterrupt):
+                with pytest.raises(SystemExit) as exc_info:
+                    main()
+                assert exc_info.value.code == EXIT_INTERRUPTED
+            mock_client.logout.assert_called()
     finally:
         sys.argv = orig_argv
 
