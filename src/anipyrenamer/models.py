@@ -7,10 +7,11 @@ from enum import Enum
 
 
 class RenameKind(str, Enum):
-    """Whether a rename item is a file or a directory (determines apply order and validation)."""
+    """Whether a rename item is a file, directory, or skipped (display-only; not applied)."""
 
     FILE = "file"
     DIRECTORY = "directory"
+    SKIP = "skip"  # Discovered but AniDB lookup failed; shown in table, not renamed
 
 
 @dataclass

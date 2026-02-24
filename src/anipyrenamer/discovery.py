@@ -7,7 +7,7 @@ from pathlib import Path
 
 from anipyrenamer.models import DiscoveredGroup
 
-# One-level scan: only direct children of directories.
+# Scan: direct children and up to two levels down (e.g. Show/Season X/episode.mkv).
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm", ".wmv", ".flv"}
 SIDECAR_EXTENSIONS = {".ass", ".srt", ".ssa", ".sub", ".idx", ".nfo", ".sup"}
 
@@ -21,8 +21,9 @@ def _normalize_path(raw: str) -> Path:
 def discover(paths: list[str]) -> list[DiscoveredGroup]:
     """
     Scan paths for video files and their sidecars (same stem).
-    Paths can be files or directories. Directories are scanned for direct children
-    and one level down (each immediate subdirectory).
+    Paths can be files or directories. Directories are scanned for direct children,
+    one level down (each immediate subdirectory), and two levels down
+    (e.g. Show/Season X/episode.mkv).
     """
     seen_stems: set[tuple[Path, str]] = set()
     groups: list[DiscoveredGroup] = []
@@ -46,6 +47,17 @@ def discover(paths: list[str]) -> list[DiscoveredGroup]:
                     for grandchild in child.iterdir():
                         if grandchild.is_file():
                             _add_file(grandchild, child, seen_stems, groups)
+                    # Two levels down: e.g. Show/Season 3/episode.mkv
+                    for grandchild in child.iterdir():
+                        if grandchild.is_dir():
+                            for great_grandchild in grandchild.iterdir():
+                                if great_grandchild.is_file():
+                                    _add_file(
+                                        great_grandchild,
+                                        grandchild,
+                                        seen_stems,
+                                        groups,
+                                    )
     return groups
 
 

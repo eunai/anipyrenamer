@@ -31,6 +31,21 @@ def test_flatten_and_validate_folder_renames_single_target_per_folder() -> None:
     assert len(folder_items) == 0
 
 
+def test_flatten_includes_skip_items() -> None:
+    """Flatten includes SKIP items so they appear in the plan table."""
+    skip_item = RenameItem(
+        "/root/Anime/unknown.mkv",
+        "(AniDB lookup failed)",
+        kind=RenameKind.SKIP,
+    )
+    flat, conflicts = flatten_and_validate_folder_renames([([skip_item], "")])
+    assert len(conflicts) == 0
+    assert len(flat) == 1
+    assert flat[0].kind == RenameKind.SKIP
+    assert flat[0].old_path == "/root/Anime/unknown.mkv"
+    assert flat[0].new_path == "(AniDB lookup failed)"
+
+
 def test_flatten_and_validate_folder_renames_multiple_targets_conflict() -> None:
     """Flatten returns only file items; directory items ignored; no conflict message."""
     items1 = [

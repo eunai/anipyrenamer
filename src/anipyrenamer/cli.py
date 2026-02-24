@@ -11,12 +11,14 @@ from dotenv import load_dotenv
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
+from rich.markup import escape as rich_escape
 from rich.progress import (
     BarColumn,
     DownloadColumn,
     Progress,
     SpinnerColumn,
     TextColumn,
+    TimeElapsedColumn,
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
@@ -264,6 +266,7 @@ def _do_hashing_lookup_plan_apply(
         SpinnerColumn(),
         BarColumn(bar_width=24, style="blue", complete_style="green"),
         TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
         console=console,
     )
     progress_file = Progress(
@@ -288,7 +291,7 @@ def _do_hashing_lookup_plan_apply(
             size = get_file_size(group.video_path)
             progress_file.update(
                 file_task,
-                description=f"[yellow]{path_str}[/yellow]",
+                description=f"[yellow]{rich_escape(path_str)}[/yellow]",
                 total=max(1, size),
                 completed=0,
                 visible=True,
@@ -310,7 +313,7 @@ def _do_hashing_lookup_plan_apply(
                         console.print("[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]")
             if info is not None:
                 console.print(
-                    f"[blue]📁 Using local cache for {path_str}[/blue] "
+                    f"[blue]📁 Using local cache for {rich_escape(path_str)}[/blue] "
                     "(use [bold]--clear-cache[/bold] to refetch from AniDB)"
                 )
             if info is None and client:
@@ -320,8 +323,16 @@ def _do_hashing_lookup_plan_apply(
                     info = client.file_lookup(size, ed2k)
                 if info is not None:
                     set_file_info(db_path, info)
-                    console.print(f"[green]🌐 Fetched from AniDB for {path_str}[/green]")
+                    console.print(f"[green]🌐 Fetched from AniDB for {rich_escape(path_str)}[/green]")
             if info is None:
+                # Show in plan table so user sees the file and why it wasn't renamed
+                skip_item = RenameItem(
+                    old_path=group.video_path,
+                    new_path="(AniDB lookup failed)",
+                    kind=RenameKind.SKIP,
+                    anime_type="",
+                )
+                all_items.append(([skip_item], group.video_path))
                 progress_overall.advance(overall_task)
                 progress_overall.update(
                     overall_task,
@@ -342,13 +353,14 @@ def _do_hashing_lookup_plan_apply(
                 description=f"Hashing and lookup {i + 1}/{len(groups)}",
             )
 
-    if not all_items:
-        console.print("[yellow]No renames to apply.[/yellow]")
+    flat_items, folder_conflicts = flatten_and_validate_folder_renames(all_items)
+    if not flat_items:
+        console.print("[yellow]No video files found.[/yellow]")
         sys.exit(0)
 
-    flat_items, folder_conflicts = flatten_and_validate_folder_renames(all_items)
     dest_conflicts = detect_destination_conflicts(flat_items)
     warnings: list[str] = []
+    flat_items, folder_conflicts = flatten_and_validate_folder_renames(all_items)
     for msg in folder_conflicts:
         warnings.append(f"[yellow]{msg}[/yellow]")
     for msg in dest_conflicts:
@@ -358,6 +370,11 @@ def _do_hashing_lookup_plan_apply(
 
     console.print("[bold]Rename plan[/bold]")
     preview_plan(flat_items, console=console)
+
+    file_items_count = sum(1 for i in flat_items if i.kind == RenameKind.FILE)
+    if file_items_count == 0:
+        console.print("[yellow]No renames to apply (AniDB lookup failed for all files).[/yellow]")
+        sys.exit(0)
 
     if args.dry_run:
         console.print("[green]Dry run; no files changed.[/green]")

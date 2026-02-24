@@ -19,13 +19,16 @@ _EPISODE_RE = re.compile(r"\d{1,4}")
 
 
 def _plan_sort_key(item: RenameItem) -> tuple[str, int, str]:
-    """Sort key for preview table: (folder_name_casefold, episode_int, new_path)."""
-    p = Path(item.new_path)
-    folder = p.parent.name.casefold()
+    """Sort key for preview table: (folder_name_casefold, episode_int, path). SKIP items use old_path."""
+    if item.kind == RenameKind.SKIP:
+        p = Path(item.old_path)
+    else:
+        p = Path(item.new_path)
+    folder = p.parent.name.casefold() if p.parent.name else ""
     stem = p.stem
     match = _EPISODE_RE.search(stem)
     episode = int(match.group()) if match else 0
-    return (folder, episode, item.new_path)
+    return (folder, episode, item.old_path)
 
 
 def preview_plan(items: list[RenameItem], console: Console | None = None) -> None:

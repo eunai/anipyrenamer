@@ -59,3 +59,20 @@ def test_discover_directory_one_level_down(tmp_path: Path) -> None:
     paths = {g.video_path for g in groups}
     assert str(tmp_path / "top.mkv") in paths
     assert str(sub / "nested.mkv") in paths
+
+
+def test_discover_directory_two_levels_down(tmp_path: Path) -> None:
+    """Scan finds videos two levels down (e.g. Show/Season X/episode.mkv)."""
+    (tmp_path / "top.mkv").write_bytes(b"x")
+    sub = tmp_path / "subdir"
+    sub.mkdir()
+    (sub / "nested.mkv").write_bytes(b"x")
+    sub2 = sub / "Season 3"
+    sub2.mkdir()
+    (sub2 / "ep07.mkv").write_bytes(b"x")
+    groups = discover([str(tmp_path)])
+    assert len(groups) == 3
+    paths = {g.video_path for g in groups}
+    assert str(tmp_path / "top.mkv") in paths
+    assert str(sub / "nested.mkv") in paths
+    assert str(sub2 / "ep07.mkv") in paths

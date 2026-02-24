@@ -17,6 +17,15 @@ def test_preview_plan_no_crash(capsys: pytest.CaptureFixture[str]) -> None:
     assert True
 
 
+def test_preview_plan_with_skip_item_no_crash(capsys: pytest.CaptureFixture[str]) -> None:
+    """Preview table includes SKIP items (AniDB lookup failed) without crashing."""
+    items = [
+        RenameItem("/path/to/video.mkv", "(AniDB lookup failed)", kind=RenameKind.SKIP),
+    ]
+    preview_plan(items)
+    assert True
+
+
 def test_preview_plan_sorted_by_folder_then_episode() -> None:
     """Preview table order is by destination folder (case-insensitive) then episode number."""
     root = "C:\\anime"
@@ -78,6 +87,21 @@ def test_apply_plan_moves_files_and_removes_empty_source_dir(tmp_path: Path) -> 
     assert new_dir.is_dir()
     assert (new_dir / new_file_name).exists()
     assert (new_dir / new_file_name).read_bytes() == b"video"
+
+
+def test_apply_plan_ignores_skip_kind(tmp_path: Path) -> None:
+    """SKIP items are not moved; only FILE items are applied."""
+    src = tmp_path / "video.mkv"
+    src.write_bytes(b"data")
+    db = tmp_path / "cache.sqlite"
+    from anipyrenamer.cache import init_db
+    init_db(str(db))
+    items = [
+        RenameItem(str(src), "(AniDB lookup failed)", kind=RenameKind.SKIP),
+    ]
+    apply_plan(items, str(db), dry_run=False)
+    assert src.exists()
+    assert src.read_bytes() == b"data"
 
 
 def test_apply_plan_skips_when_destination_exists(tmp_path: Path) -> None:
