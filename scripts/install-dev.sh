@@ -2,4 +2,4 @@
 set -e
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 cd "$SCRIPT_DIR/.."
-pip install -e ".[dev]"
+python3.13 -m pip install -e ".[dev]"

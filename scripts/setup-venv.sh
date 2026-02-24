@@ -6,7 +6,7 @@ if [ -d .venv ]; then
     echo ".venv already exists. Activate it and run scripts/install-dev.sh if needed."
     exit 0
 fi
-python3 -m venv .venv
+python3.13 -m venv .venv
 # shellcheck source=/dev/null
 . .venv/bin/activate
 pip install -e ".[dev]"

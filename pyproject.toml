@@ -7,7 +7,7 @@ name = "anipyrenamer"
 version = "0.1.0"
 description = "Rename anime files using ED2K hash and AniDB."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "pycryptodome>=3.20,<3.22",
     "rich>=13.7,<14",
