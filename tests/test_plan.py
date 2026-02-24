@@ -107,6 +107,40 @@ def test_build_plan_folder_template_with_dest_omits_folder_rename() -> None:
     assert "dest" in items[0].new_path
 
 
+def test_build_plan_with_plex_folder_template() -> None:
+    """Plex-modified folder template produces folder name with [anidb-<aid>]."""
+    group = DiscoveredGroup(
+        video_path="/root/MyDir/ep01.mkv",
+        sidecar_paths=(),
+    )
+    info = FileInfo(
+        fid=1,
+        aid=9876,
+        eid=3,
+        gid=4,
+        size=100,
+        ed2k="x" * 32,
+        quality="high",
+        source="TV",
+        anime_title="My Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Subs",
+    )
+    plex_folder_tpl = "%title% [%group%] [anidb-%aid%]%ext%"
+    items = build_plan(
+        group,
+        info,
+        "%title% - %epno%%ext%",
+        dest_root=None,
+        folder_template=plex_folder_tpl,
+    )
+    assert len(items) == 1
+    new_path = Path(items[0].new_path)
+    assert "[anidb-9876]" in new_path.parent.name
+    assert "Subs" in new_path.parent.name
+
+
 def test_build_plan_two_groups_same_dir_same_folder_target() -> None:
     """Two episodes in the same folder produce file items with the same target parent (no directory items)."""
     info = FileInfo(

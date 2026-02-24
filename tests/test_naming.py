@@ -73,6 +73,20 @@ def test_render_template_aid_eid_fid_gid() -> None:
     assert "1" in out and "2" in out and "3" in out and "4" in out
 
 
+def test_render_template_plex_folder_with_anidb_id() -> None:
+    """Plex-style folder template renders [anidb-<aid>] correctly."""
+    out = render_template(
+        "%title% [%group%] [anidb-%aid%]",
+        title="My Anime",
+        group="ABC",
+        aid="12345",
+        extension="",
+    )
+    assert "My Anime" in out
+    assert "[ABC]" in out
+    assert "[anidb-12345]" in out
+
+
 def test_render_template_group_short_and_long() -> None:
     """%group% uses short by default; %grouplong% uses long."""
     out = render_template(

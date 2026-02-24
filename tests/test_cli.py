@@ -1,4 +1,4 @@
-"""CLI tests: --help, no paths, dry-run with no videos, interrupt logout."""
+"""CLI tests: --help, no paths, dry-run with no videos, interrupt logout, --plex."""
 from __future__ import annotations
 
 import sys
@@ -7,8 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from anipyrenamer.cli import EXIT_INTERRUPTED, main
+from anipyrenamer.cli import EXIT_INTERRUPTED, PLEX_SUFFIX, _apply_plex_suffix, main
 from anipyrenamer.models import RenameItem, RenameKind
+from anipyrenamer.naming import DEFAULT_FOLDER_TEMPLATE
 from anipyrenamer.validation import flatten_and_validate_folder_renames
 
 
@@ -69,6 +70,32 @@ def test_cli_keyboard_interrupt_calls_logout(tmp_path: Path, monkeypatch: pytest
             mock_client.logout.assert_called()
     finally:
         sys.argv = orig_argv
+
+
+def test_apply_plex_suffix_default_template() -> None:
+    """Plex suffix is inserted before %ext% in the default folder template."""
+    result = _apply_plex_suffix(DEFAULT_FOLDER_TEMPLATE)
+    assert "[anidb-%aid%]" in result
+    assert result.endswith("%ext%")
+    assert result.index("[anidb-%aid%]") < result.index("%ext%")
+
+
+def test_apply_plex_suffix_template_with_ext() -> None:
+    """Plex suffix is inserted before %ext% when template contains it."""
+    result = _apply_plex_suffix("%title% [%group%]%ext%")
+    assert result == "%title% [%group%] [anidb-%aid%]%ext%"
+
+
+def test_apply_plex_suffix_template_without_ext() -> None:
+    """Plex suffix is appended when template has no %ext%."""
+    result = _apply_plex_suffix("%title% [%group%]")
+    assert result == "%title% [%group%] [anidb-%aid%]"
+
+
+def test_apply_plex_suffix_custom_template() -> None:
+    """Plex suffix works with a custom folder template."""
+    result = _apply_plex_suffix("%title%%ext%")
+    assert result == "%title% [anidb-%aid%]%ext%"
 
 
 def test_flatten_validate_one_folder_per_dir_when_targets_agree() -> None:

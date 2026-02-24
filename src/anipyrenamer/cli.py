@@ -45,6 +45,15 @@ load_dotenv()
 # Exit code when user interrupts (e.g. Ctrl+C)
 EXIT_INTERRUPTED = 130
 
+PLEX_SUFFIX = " [anidb-%aid%]"
+
+
+def _apply_plex_suffix(template: str) -> str:
+    """Insert the Plex/ASS/HAMA AniDB-id tag before %ext% (or append if no %ext%)."""
+    if "%ext%" in template:
+        return template.replace("%ext%", f"{PLEX_SUFFIX}%ext%", 1)
+    return template + PLEX_SUFFIX
+
 
 def _disconnect_anidb(client: Any, console: Console, had_session: bool) -> None:
     """Log out from AniDB and print disconnect message only when we had a session."""
@@ -92,6 +101,14 @@ def main() -> None:
         "--folder-template",
         default=DEFAULT_FOLDER_TEMPLATE,
         help="Series folder naming template when --folder is used (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--plex",
+        action="store_true",
+        help=(
+            "Append [anidb-<aid>] to the folder name for Plex / Absolute Series Scanner (ASS) "
+            "/ HAMA compatibility (implies --folder). Does not support season-based numbering."
+        ),
     )
     parser.add_argument(
         "-d",
@@ -311,7 +328,12 @@ def _do_hashing_lookup_plan_apply(
                     description=f"Hashing and lookup {i + 1}/{len(groups)}",
                 )
                 continue
-            folder_tpl = args.folder_template if args.folder else None
+            use_folder = args.folder or args.plex
+            folder_tpl: str | None = None
+            if use_folder:
+                folder_tpl = args.folder_template
+                if args.plex:
+                    folder_tpl = _apply_plex_suffix(folder_tpl)
             items = build_plan(group, info, args.template, args.dest, folder_template=folder_tpl)
             all_items.append((items, group.video_path))
             progress_overall.advance(overall_task)
