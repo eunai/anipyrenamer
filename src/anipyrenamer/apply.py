@@ -33,13 +33,24 @@ def apply_plan(
 ) -> None:
     """
     Move each old_path to new_path; create parent dirs if needed.
+    Applies file renames first, then folder renames, so folder renames do not invalidate paths.
     If record is True, append to rename_history. If dry_run, do nothing.
     """
     if dry_run:
         return
+    file_items: list[RenameItem] = []
+    folder_items: list[RenameItem] = []
+    for item in items:
+        src = Path(item.old_path)
+        if not src.exists():
+            continue
+        if src.is_file():
+            file_items.append(item)
+        else:
+            folder_items.append(item)
     bid = batch_id or str(uuid.uuid4())
     to_record: list[tuple[str, str]] = []
-    for item in items:
+    for item in file_items + folder_items:
         src = Path(item.old_path)
         dst = Path(item.new_path)
         if not src.exists():

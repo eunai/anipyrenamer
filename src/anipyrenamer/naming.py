@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import re
 
-# Characters illegal in Windows filenames; also sanitize for cross-platform.
-ILLEGAL_CHARS = re.compile(r'[\\/:*?"<>|\s]+')
+# Characters illegal in Windows filenames (space is allowed).
+ILLEGAL_CHARS = re.compile(r'[\\/:*?"<>|]+')
 
 
 def _sanitize(s: str) -> str:
-    """Safe filename: no \\ / : * ? \" < > |; collapse whitespace; trim trailing dashes."""
+    """Safe filename: no \\ / : * ? \" < > |; preserve spaces; collapse multiple spaces; trim."""
     out = ILLEGAL_CHARS.sub("-", s.strip())
-    out = re.sub(r"-+", "-", out).strip("-").strip()
+    out = re.sub(r"-+", "-", out).strip("-")
+    out = re.sub(r"\s+", " ", out).strip()
     return out or "Unknown"
 
 
@@ -59,7 +60,7 @@ def render_template(
     duration: str = "",
     watched: str = "",
 ) -> str:
-    """Replace tokens; result sanitized for filenames. See DEFAULT_TEMPLATE and docs."""
+    """Replace tokens; result sanitized for filenames. See DEFAULT_FILE_TEMPLATE and docs."""
     out = template
     out = out.replace("%title%", _sanitize(title) or _sanitize(title_english) or _sanitize(title_romaji) or "Unknown")
     out = out.replace("%title_romaji%", _sanitize(title_romaji) or "")
@@ -103,4 +104,8 @@ def render_template(
     return _sanitize(out) or "Unknown"
 
 
-DEFAULT_TEMPLATE = "%title% - %epno%%fileversion% - %eptitle% [%group%]%ext%"
+# Episode file naming (individual episode files).
+DEFAULT_FILE_TEMPLATE = "%title% %epno%%fileversion% - %eptitle% [%group%]%ext%"
+
+# Series folder naming (top-level anime series folder). Used only when --folder is set; %ext% is "" for folders.
+DEFAULT_FOLDER_TEMPLATE = "%title% [%group%]%ext%"

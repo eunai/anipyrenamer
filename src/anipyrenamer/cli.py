@@ -10,14 +10,36 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from anipyrenamer.apply import apply_plan, preview_plan
-from anipyrenamer.cache import get_db_path, init_db, get_file_info, set_file_info
+from anipyrenamer.cache import (
+    clear_file_anidb_cache,
+    clear_file_anidb_entries,
+    get_db_path,
+    init_db,
+    get_file_info,
+    set_file_info,
+)
 from anipyrenamer.discovery import discover, get_file_size
 from anipyrenamer.ed2k import compute_ed2k
 from anipyrenamer.models import RenameItem
-from anipyrenamer.naming import DEFAULT_TEMPLATE
+from anipyrenamer.naming import DEFAULT_FILE_TEMPLATE, DEFAULT_FOLDER_TEMPLATE
 from anipyrenamer.plan import build_plan
 
 load_dotenv()
+
+
+def _flatten_and_dedupe_renames(
+    all_items: list[tuple[list[RenameItem], str]],
+) -> list[RenameItem]:
+    """Flatten per-group renames and deduplicate by old_path (folder renames repeat per episode)."""
+    seen_old: set[str] = set()
+    flat: list[RenameItem] = []
+    for items, _ in all_items:
+        for item in items:
+            if item.old_path in seen_old:
+                continue
+            seen_old.add(item.old_path)
+            flat.append(item)
+    return flat
 
 
 def main() -> None:
@@ -46,8 +68,18 @@ def main() -> None:
     parser.add_argument(
         "-t",
         "--template",
-        default=DEFAULT_TEMPLATE,
-        help="Naming template (default: %(default)s).",
+        default=DEFAULT_FILE_TEMPLATE,
+        help="Episode file naming template (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--folder",
+        action="store_true",
+        help="Also rename the direct parent folder using the series folder template.",
+    )
+    parser.add_argument(
+        "--folder-template",
+        default=DEFAULT_FOLDER_TEMPLATE,
+        help="Series folder naming template when --folder is used (default: %(default)s).",
     )
     parser.add_argument(
         "-d",
@@ -71,6 +103,21 @@ def main() -> None:
         default=30,
         help="Items per 'Continue with next N?' (default: 30).",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Log AniDB request/response and cache hits (for debugging).",
+    )
+    parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Clear AniDB cache only for the file(s) or folder(s) being scanned (force refetch for those).",
+    )
+    parser.add_argument(
+        "--clear-cache-all",
+        action="store_true",
+        help="Clear entire local AniDB file cache before run.",
+    )
     args = parser.parse_args()
 
     if not args.paths:
@@ -80,11 +127,30 @@ def main() -> None:
     console = Console()
     db_path = get_db_path(args.db)
     init_db(db_path)
+    if args.clear_cache_all:
+        clear_file_anidb_cache(db_path)
+        console.print("[dim]Entire AniDB file cache cleared.[/dim]")
 
     groups = discover(args.paths)
     if not groups:
         console.print("[yellow]No video files found.[/yellow]")
         sys.exit(0)
+
+    if args.clear_cache:
+        entries: list[tuple[int, str]] = []
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Clearing cache for scanned files…", total=len(groups))
+            for group in groups:
+                size = get_file_size(group.video_path)
+                ed2k = compute_ed2k(group.video_path)
+                entries.append((size, ed2k))
+                progress.advance(task)
+        n = clear_file_anidb_entries(db_path, entries)
+        console.print(f"[dim]Cleared AniDB cache for {n} file(s) in this scan.[/dim]")
 
     # Resolve AniDB client only when not offline
     client = None
@@ -93,9 +159,26 @@ def main() -> None:
 
         cfg = AniDBConfig.from_env()
         if cfg.username and cfg.password:
-            client = AniDBClient(cfg)
-            if not client.login():
-                console.print("[red]AniDB login failed.[/red]")
+            client = AniDBClient(cfg, debug=args.debug)
+            try:
+                ok, msg = client.login()
+                if not ok:
+                    if msg and "555" in msg and "BANNED" in msg.upper():
+                        console.print(
+                            "[red]AniDB returned: account or IP is temporarily banned.[/red] "
+                            "Wait before retrying; use [bold]--offline[/bold] to use cache only."
+                        )
+                    else:
+                        console.print("[red]AniDB login failed.[/red]")
+                    client.logout()
+                    sys.exit(1)
+            except TimeoutError:
+                console.print(
+                    "[red]AniDB connection timed out.[/red] "
+                    "You may be rate-limited or temporarily banned. "
+                    "Try again later or use [bold]--offline[/bold] to use cache only."
+                )
+                client.logout()
                 sys.exit(1)
         else:
             console.print(
@@ -114,6 +197,15 @@ def main() -> None:
             size = get_file_size(group.video_path)
             ed2k = compute_ed2k(group.video_path)
             info = get_file_info(db_path, size, ed2k)
+            if info is not None and args.debug:
+                console.print(f"[dim][debug] Using cached AniDB data for size={size} ed2k={ed2k[:16]}…[/dim]")
+            # Refetch if cached title looks like a hash (old parser bug)
+            if info is not None and client:
+                from anipyrenamer.anidb import _looks_like_hash
+                if _looks_like_hash(info.anime_title):
+                    info = None
+                    if args.debug:
+                        console.print("[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]")
             if info is None and client:
                 info = client.file_lookup(size, ed2k)
                 if info is None and client._session is None:
@@ -127,7 +219,8 @@ def main() -> None:
                 )
                 progress.advance(task)
                 continue
-            items = build_plan(group, info, args.template, args.dest)
+            folder_tpl = args.folder_template if args.folder else None
+            items = build_plan(group, info, args.template, args.dest, folder_template=folder_tpl)
             all_items.append((items, group.video_path))
             progress.advance(task)
 
@@ -138,9 +231,7 @@ def main() -> None:
         console.print("[yellow]No renames to apply.[/yellow]")
         sys.exit(0)
 
-    flat_items: list[RenameItem] = []
-    for items, _ in all_items:
-        flat_items.extend(items)
+    flat_items = _flatten_and_dedupe_renames(all_items)
 
     preview_plan(flat_items, console=console)
 

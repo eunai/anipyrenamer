@@ -41,11 +41,27 @@ class AniDBConfig:
         )
 
 
+def _looks_like_hash(s: str) -> bool:
+    """True if string looks like a hex hash (CRC32, MD5, SHA1, ED2K, etc.) - do not use as title/group."""
+    if len(s) < 8:
+        return False
+    allowed = set("0123456789abcdefABCDEF-")
+    if not all(c in allowed for c in s):
+        return False
+    # CRC32 = 8 hex chars; MD5=32, SHA1=40, ED2K=32
+    if len(s) == 8 and sum(c in "abcdefABCDEF" for c in s) >= 2:
+        return True
+    if len(s) >= 16 and sum(c in "abcdefABCDEF" for c in s) >= 2:
+        return True
+    return False
+
+
 class AniDBClient:
     """UDP client with throttle: burst 5, then 1 per 2.5s."""
 
-    def __init__(self, config: AniDBConfig) -> None:
+    def __init__(self, config: AniDBConfig, *, debug: bool = False) -> None:
         self._config = config
+        self._debug = debug
         self._sock: socket.socket | None = None
         self._session: str | None = None
         self._packets_sent = 0
@@ -75,12 +91,19 @@ class AniDBClient:
     def _send_recv(self, msg: str) -> str:
         self._throttle()
         sock = self._ensure_socket()
+        if self._debug:
+            log_msg = re.sub(r"pass=\w+", "pass=***", msg)
+            print(f"[anidb] >>> {log_msg}")
         sock.sendto(msg.encode("utf-8"), (ANIDB_HOST, ANIDB_PORT))
         data, _ = sock.recvfrom(4096)
-        return data.decode("utf-8", errors="replace").strip()
+        reply = data.decode("utf-8", errors="replace").strip()
+        if self._debug:
+            preview = reply[:500] + "..." if len(reply) > 500 else reply
+            print(f"[anidb] <<< {preview}")
+        return reply
 
-    def login(self) -> bool:
-        """AUTH; store session key. Returns True if 200/201."""
+    def login(self) -> tuple[bool, str]:
+        """AUTH; store session key. Returns (True, '') if 200/201, else (False, reply)."""
         cfg = self._config
         msg = (
             f"AUTH user={cfg.username}&pass={cfg.password}"
@@ -91,8 +114,8 @@ class AniDBClient:
         m = re.match(r"(?:\S+\s+)?(?:200|201)\s+(\S+)\s+LOGIN", reply)
         if m:
             self._session = m.group(1)
-            return True
-        return False
+            return (True, "")
+        return (False, reply)
 
     def logout(self) -> None:
         """LOGOUT and close socket."""
@@ -163,8 +186,12 @@ class AniDBClient:
         if len(parts) >= 15:
             info.title_romaji = info.title_romaji or (parts[12] or "").strip()
             info.title_english = info.title_english or (parts[14] or "").strip()
-        if not info.anime_title:
-            info.anime_title = info.title_english or info.title_romaji or info.title_kanji or ""
+        # Prefer ANIME titles over FILE line heuristic (which can misparse quality/codec as title)
+        anime_from_anime = info.title_english or info.title_romaji or info.title_kanji or ""
+        if anime_from_anime:
+            info.anime_title = anime_from_anime
+        elif not info.anime_title:
+            info.anime_title = ""
 
     def _fill_episode_info(self, info: FileInfo) -> None:
         """EPISODE eid=; fill epno, episode title variants."""
@@ -176,12 +203,17 @@ class AniDBClient:
         parts = reply.split("\n")[1].strip().split("|")
         # eid|aid|length|rating|votes|epno|eng|romaji|kanji|aired|type
         if len(parts) >= 9:
-            info.episode_number = info.episode_number or (parts[5] or "").strip()
+            # Prefer EPISODE data over FILE heuristic (which can misparse codec/bitrate as epno/eptitle)
+            epno = (parts[5] or "").strip()
+            if epno:
+                info.episode_number = epno
             info.eptitle_english = (parts[6] or "").strip()
             info.eptitle_romaji = (parts[7] or "").strip()
             info.eptitle_kanji = (parts[8] or "").strip()
         if len(parts) >= 7:
-            info.episode_title = info.episode_title or (parts[6] or "").strip()
+            eptitle = (parts[6] or "").strip()
+            if eptitle:
+                info.episode_title = eptitle
         if not info.episode_title and info.eptitle_english:
             info.episode_title = info.eptitle_english
 
@@ -223,12 +255,14 @@ def _parse_file_response(data_line: str, size: int, ed2k: str) -> FileInfo:
     episode_title = ""
     group_name = ""
     file_version = ""
-    # Scan for common string fields (quality, source, names appear in response)
+    # Scan for common string fields (quality, source, names). Skip hash-like fields (MD5, SHA1, etc.).
     for i, p in enumerate(parts):
         if p in ("high", "medium", "low", "corrupt", "very high", "backup", "unknown"):
             quality = p
         elif p in ("TV", "DTV", "DVD", "VHS", "HDTV", "LD", "WEB", "Blu-ray", "Blu-Ray"):
             source = p
+        elif _looks_like_hash(p):
+            continue  # do not use hash as title/group
         elif i >= 4 and len(p) > 2 and not p.isdigit() and "|" not in p:
             if not anime_title and p:
                 anime_title = p

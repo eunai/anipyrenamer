@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from anipyrenamer.anidb import AniDBConfig, _parse_file_response
+from anipyrenamer.anidb import AniDBConfig, _looks_like_hash, _parse_file_response
 
 
 def test_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -38,3 +38,12 @@ def test_parse_file_response_with_quality_source() -> None:
     info = _parse_file_response(line, size=size, ed2k=ed2k)
     assert info.quality == "high"
     assert info.source == "DTV"
+
+
+def test_looks_like_hash_crc32_not_used_as_title() -> None:
+    """8-char hex (CRC32) must be treated as hash so FILE parser does not use it as anime_title."""
+    assert _looks_like_hash("d6be2d15") is True
+    assert _looks_like_hash("abcdef01") is True
+    assert _looks_like_hash("12345678") is False  # digits only, no a-f
+    assert _looks_like_hash("ab") is False  # too short
+    assert _looks_like_hash("e" * 32) is True  # MD5/ED2K length

@@ -8,27 +8,15 @@ from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem
 from anipyrenamer.naming import render_template
 
 
-def build_plan(
-    group: DiscoveredGroup,
-    info: FileInfo,
-    template: str,
-    dest_root: str | None = None,
-) -> list[RenameItem]:
-    """
-    Build (old_path, new_path) for the video and its sidecars.
-    If dest_root is None, new paths are in-place (same dir as video).
-    """
-    video_path = Path(group.video_path)
-    ext = video_path.suffix or ""
-    current_filename = video_path.name
-    base_name = render_template(
-        template,
+def _info_kwargs(info: FileInfo, extension: str = "") -> dict[str, str]:
+    """Build kwargs for render_template from FileInfo."""
+    return dict(
         title=info.anime_title,
         epno=info.episode_number,
         eptitle=info.episode_title,
         group=info.group_short_name or info.group_name,
         group_long=info.group_name,
-        extension=ext,
+        extension=extension,
         fileversion=info.file_version,
         aid=str(info.aid),
         eid=str(info.eid),
@@ -53,7 +41,7 @@ def build_plan(
         source=info.source,
         quality=info.quality,
         anidb_filename=info.anidb_filename,
-        current_filename=current_filename,
+        current_filename="",
         crc=info.crc,
         video_resolution=info.video_resolution,
         audio_codec=info.audio_codec,
@@ -63,6 +51,27 @@ def build_plan(
         duration=info.duration,
         watched=info.watched,
     )
+
+
+def build_plan(
+    group: DiscoveredGroup,
+    info: FileInfo,
+    template: str,
+    dest_root: str | None = None,
+    folder_template: str | None = None,
+) -> list[RenameItem]:
+    """
+    Build (old_path, new_path) for the video and its sidecars.
+    If dest_root is None, new paths are in-place (same dir as video).
+    When folder_template is set and dest_root is None, also add one RenameItem for the parent folder
+    (CLI deduplicates by old_path when multiple episodes share the same folder).
+    """
+    video_path = Path(group.video_path)
+    ext = video_path.suffix or ""
+    current_filename = video_path.name
+    kwargs = _info_kwargs(info, extension=ext)
+    kwargs["current_filename"] = current_filename
+    base_name = render_template(template, **kwargs)
     parent = video_path.parent
     if dest_root:
         parent = Path(dest_root)
@@ -72,4 +81,9 @@ def build_plan(
         p = Path(old_side)
         new_side = parent / f"{base_name.removesuffix(ext)}{p.suffix}"
         items.append(RenameItem(old_path=old_side, new_path=str(new_side)))
+    if folder_template is not None and dest_root is None:
+        parent_dir = video_path.parent
+        folder_name = render_template(folder_template, **_info_kwargs(info, extension=""))
+        new_parent = parent_dir.parent / folder_name
+        items.append(RenameItem(old_path=str(parent_dir), new_path=str(new_parent)))
     return items

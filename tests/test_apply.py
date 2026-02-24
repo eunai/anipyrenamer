@@ -37,3 +37,29 @@ def test_apply_plan_moves_file(tmp_path: Path) -> None:
     assert not src.exists()
     assert (tmp_path / "new.mkv").exists()
     assert (tmp_path / "new.mkv").read_bytes() == b"data"
+
+
+def test_apply_plan_files_before_folders(tmp_path: Path) -> None:
+    """Apply order must be files first, then folders, so the file ends up in the renamed folder."""
+    from anipyrenamer.cache import init_db
+
+    old_dir = tmp_path / "OldDir"
+    old_dir.mkdir()
+    file_path = old_dir / "ep.mkv"
+    file_path.write_bytes(b"video")
+    new_dir_name = "NewDir"
+    new_file_name = "renamed.mkv"
+    db = tmp_path / "cache.sqlite"
+    init_db(str(db))
+    # Item order: folder rename first, then file rename. apply_plan must still do file then folder.
+    items = [
+        RenameItem(str(old_dir), str(tmp_path / new_dir_name)),
+        RenameItem(str(file_path), str(old_dir / new_file_name)),
+    ]
+    apply_plan(items, str(db), dry_run=False, record=False)
+    # After apply: file moved to OldDir/renamed.mkv, then OldDir renamed to NewDir
+    assert not file_path.exists()
+    assert not old_dir.exists()
+    assert (tmp_path / new_dir_name).is_dir()
+    assert (tmp_path / new_dir_name / new_file_name).exists()
+    assert (tmp_path / new_dir_name / new_file_name).read_bytes() == b"video"

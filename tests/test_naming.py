@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from anipyrenamer.naming import DEFAULT_TEMPLATE, render_template
+from anipyrenamer.naming import (
+    DEFAULT_FILE_TEMPLATE,
+    DEFAULT_FOLDER_TEMPLATE,
+    render_template,
+)
 
 
 def test_render_template_default_tokens() -> None:
@@ -24,10 +28,37 @@ def test_sanitize_removes_illegal_chars() -> None:
     assert ":" not in out and "/" not in out and "*" not in out
 
 
-def test_default_template_constant() -> None:
-    assert "%title%" in DEFAULT_TEMPLATE
-    assert "%epno%" in DEFAULT_TEMPLATE
-    assert "%ext%" in DEFAULT_TEMPLATE
+def test_sanitize_preserves_spaces() -> None:
+    """Spaces are preserved in output; only truly illegal chars replaced."""
+    out = render_template("%title% - %eptitle%", title="Solo Leveling", eptitle="I'm Used to It")
+    assert "Solo Leveling" in out
+    assert "I'm Used to It" in out
+    assert "  " not in out  # multiple spaces collapsed to one
+
+
+def test_default_file_template_constant() -> None:
+    assert "%title%" in DEFAULT_FILE_TEMPLATE
+    assert "%epno%" in DEFAULT_FILE_TEMPLATE
+    assert "%ext%" in DEFAULT_FILE_TEMPLATE
+
+
+def test_default_folder_template_constant() -> None:
+    assert "%title%" in DEFAULT_FOLDER_TEMPLATE
+    assert "%group%" in DEFAULT_FOLDER_TEMPLATE
+    assert "%ext%" in DEFAULT_FOLDER_TEMPLATE
+
+
+def test_render_template_folder_extension_empty() -> None:
+    """Folder names use extension='' so %ext% is empty."""
+    out = render_template(
+        DEFAULT_FOLDER_TEMPLATE,
+        title="My Anime",
+        group="Subs",
+        extension="",
+    )
+    assert "My Anime" in out or "My-Anime" in out
+    assert "Subs" in out
+    assert not out.endswith(".")
 
 
 def test_render_template_aid_eid_fid_gid() -> None:

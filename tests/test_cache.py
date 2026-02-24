@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from anipyrenamer.cache import (
+    clear_file_anidb_cache,
+    clear_file_anidb_entries,
     get_file_info,
     get_db_path,
     init_db,
@@ -58,3 +60,25 @@ def test_record_renames(tmp_path: Path) -> None:
     set_file_info(db, FileInfo(1, 2, 3, 4, 100, "e" * 32, "high", "TV"))
     got = get_file_info(db, 100, "e" * 32)
     assert got is not None
+
+
+def test_clear_file_anidb_entries(tmp_path: Path) -> None:
+    db = str(tmp_path / "test.sqlite")
+    init_db(db)
+    set_file_info(db, FileInfo(1, 2, 3, 4, 100, "e" * 32, "high", "TV"))
+    set_file_info(db, FileInfo(5, 6, 7, 8, 200, "f" * 32, "low", "DVD"))
+    assert get_file_info(db, 100, "e" * 32) is not None
+    assert get_file_info(db, 200, "f" * 32) is not None
+    n = clear_file_anidb_entries(db, [(100, "e" * 32)])
+    assert n == 1
+    assert get_file_info(db, 100, "e" * 32) is None
+    assert get_file_info(db, 200, "f" * 32) is not None
+    assert clear_file_anidb_entries(db, []) == 0
+
+
+def test_clear_file_anidb_cache(tmp_path: Path) -> None:
+    db = str(tmp_path / "test.sqlite")
+    init_db(db)
+    set_file_info(db, FileInfo(1, 2, 3, 4, 100, "e" * 32, "high", "TV"))
+    clear_file_anidb_cache(db)
+    assert get_file_info(db, 100, "e" * 32) is None

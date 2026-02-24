@@ -97,6 +97,29 @@ def init_db(db_path: str) -> None:
         conn.commit()
 
 
+def clear_file_anidb_cache(db_path: str) -> None:
+    """Delete all rows from file_anidb so lookups will refetch from AniDB. Keeps rename_history."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM file_anidb")
+        conn.commit()
+
+
+def clear_file_anidb_entries(db_path: str, entries: list[tuple[int, str]]) -> int:
+    """
+    Delete file_anidb rows for the given (size, ed2k) pairs.
+    Returns the number of rows deleted.
+    """
+    if not entries:
+        return 0
+    with sqlite3.connect(db_path) as conn:
+        total = 0
+        for size, ed2k in entries:
+            cur = conn.execute("DELETE FROM file_anidb WHERE size = ? AND ed2k = ?", (size, ed2k))
+            total += cur.rowcount
+        conn.commit()
+        return total
+
+
 def get_file_info(db_path: str, size: int, ed2k: str) -> FileInfo | None:
     """Return cached FileInfo if present and not stale (>30 days)."""
     with sqlite3.connect(db_path) as conn:

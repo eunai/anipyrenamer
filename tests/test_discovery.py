@@ -39,11 +39,23 @@ def test_discover_ignores_non_video(tmp_path: Path) -> None:
     assert len(groups) == 0
 
 
-def test_discover_directory_one_level_only(tmp_path: Path) -> None:
+def test_discover_path_with_trailing_sep(tmp_path: Path) -> None:
+    """Path with trailing slash/backslash still finds videos in directory."""
+    (tmp_path / "a.mkv").write_bytes(b"x")
+    path_with_trail = str(tmp_path) + ("\\" if __import__("sys").platform == "win32" else "/")
+    groups = discover([path_with_trail])
+    assert len(groups) == 1
+    assert groups[0].video_path == str(tmp_path / "a.mkv")
+
+
+def test_discover_directory_one_level_down(tmp_path: Path) -> None:
+    """Scan finds videos in directory and one level down in subdirs."""
+    (tmp_path / "top.mkv").write_bytes(b"x")
     sub = tmp_path / "subdir"
     sub.mkdir()
     (sub / "nested.mkv").write_bytes(b"x")
     groups = discover([str(tmp_path)])
-    assert len(groups) == 0
-    groups = discover([str(sub)])
-    assert len(groups) == 1
+    assert len(groups) == 2
+    paths = {g.video_path for g in groups}
+    assert str(tmp_path / "top.mkv") in paths
+    assert str(sub / "nested.mkv") in paths

@@ -12,23 +12,40 @@ VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm", ".wmv", ".f
 SIDECAR_EXTENSIONS = {".ass", ".srt", ".ssa", ".sub", ".idx", ".nfo", ".sup"}
 
 
+def _normalize_path(raw: str) -> Path:
+    """Resolve path; strip trailing slashes so directories with trailing sep resolve correctly."""
+    p = Path(raw.strip().rstrip("/\\"))
+    return p.resolve()
+
+
 def discover(paths: list[str]) -> list[DiscoveredGroup]:
     """
     Scan paths for video files and their sidecars (same stem).
-    Paths can be files or directories; directories are scanned one level only.
+    Paths can be files or directories. Directories are scanned for direct children
+    and one level down (each immediate subdirectory).
     """
     seen_stems: set[tuple[Path, str]] = set()
     groups: list[DiscoveredGroup] = []
     for raw in paths:
-        p = Path(raw).resolve()
+        try:
+            p = _normalize_path(raw)
+        except (OSError, RuntimeError):
+            continue
         if not p.exists():
             continue
         if p.is_file():
             _add_file(p, Path(p.parent), seen_stems, groups)
         else:
+            # Direct children (files in this directory)
             for child in p.iterdir():
                 if child.is_file():
                     _add_file(child, p, seen_stems, groups)
+            # One level down: files in each immediate subdirectory
+            for child in p.iterdir():
+                if child.is_dir():
+                    for grandchild in child.iterdir():
+                        if grandchild.is_file():
+                            _add_file(grandchild, child, seen_stems, groups)
     return groups
 
 
