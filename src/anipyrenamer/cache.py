@@ -13,11 +13,31 @@ CACHE_STALE_SECONDS = CACHE_STALE_DAYS * 24 * 60 * 60
 
 # Extra columns for AniAdd-style variables (migration adds if missing)
 FILE_ANIDB_EXTRA_COLUMNS = [
-    "title_romaji", "title_english", "title_kanji", "title_synonym", "title_other",
-    "eptitle_romaji", "eptitle_english", "eptitle_kanji",
-    "ep_count", "ep_highest", "year_begin", "year_end", "categories", "anime_type",
-    "deprecated", "censored", "anidb_filename", "crc", "video_resolution",
-    "audio_codec", "video_codec", "audio_langs", "subtitle_langs", "duration", "watched",
+    "title_romaji",
+    "title_english",
+    "title_kanji",
+    "title_synonym",
+    "title_other",
+    "eptitle_romaji",
+    "eptitle_english",
+    "eptitle_kanji",
+    "ep_count",
+    "ep_highest",
+    "year_begin",
+    "year_end",
+    "categories",
+    "anime_type",
+    "deprecated",
+    "censored",
+    "anidb_filename",
+    "crc",
+    "video_resolution",
+    "audio_codec",
+    "video_codec",
+    "audio_langs",
+    "subtitle_langs",
+    "duration",
+    "watched",
 ]
 
 

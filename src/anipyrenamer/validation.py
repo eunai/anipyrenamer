@@ -63,8 +63,6 @@ def detect_destination_conflicts(items: list[RenameItem]) -> list[str]:
         key = dst.resolve().as_posix()
         if key not in seen:
             seen.add(key)
-            conflicts.append(
-                f"Destination already exists: {item.new_path}; will skip."
-            )
+            conflicts.append(f"Destination already exists: {item.new_path}; will skip.")
 
     return conflicts
