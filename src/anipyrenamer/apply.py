@@ -66,25 +66,28 @@ def _same_path(a: Path, b: Path) -> bool:
 
 def apply_plan(
     items: list[RenameItem],
-    db_path: str,
+    db_path: str,  # Reserved for future use (e.g. post-rename cache path update); not used today.
     *,
     dry_run: bool = False,
     progress_callback: Callable[[int, int, RenameItem, bool | None], None] | None = None,
-) -> None:
+) -> tuple[int, int]:
     """
     Move each file old_path to new_path; create parent dirs if needed.
     Only FILE items are applied. After moves, remove empty source directories
     (depth descending so parent dirs can become empty). No implicit overwrite:
     if destination already exists and is not the source, the item is skipped.
-    If dry_run, do nothing.
+    If dry_run, do nothing and return (0, 0).
     progress_callback: optional (current_1based_index, total, item, skipped).
       Called at start of each item with skipped=None; at end with skipped=True/False for CLI progress UI.
+    Returns (applied_count, skipped_count) for exit code semantics (exit 2 when skipped_count > 0).
     """
     if dry_run:
-        return
+        return (0, 0)
     file_items = [i for i in items if i.kind == RenameKind.FILE]
     total = len(file_items)
     applied_source_parents: set[Path] = set()
+    applied_count = 0
+    skipped_count = 0
     for idx, item in enumerate(file_items, start=1):
         if progress_callback:
             progress_callback(idx, total, item, None)  # started
@@ -96,10 +99,16 @@ def apply_plan(
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(src), str(dst))
                 applied_source_parents.add(src.parent)
+                applied_count += 1
                 skipped = False
+            else:
+                skipped_count += 1
+        else:
+            skipped_count += 1
         if progress_callback:
             progress_callback(idx, total, item, skipped)  # done
     # Remove empty source dirs (deepest first)
     for dir_path in sorted(applied_source_parents, key=lambda p: len(p.parts), reverse=True):
         if dir_path.exists() and dir_path.is_dir() and not any(dir_path.iterdir()):
             dir_path.rmdir()
+    return (applied_count, skipped_count)

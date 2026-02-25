@@ -97,3 +97,25 @@ def test_render_template_group_short_and_long() -> None:
     assert "SEV" in out and "Sublime" in out
     out_short_only = render_template("[%group%]", group="SEV", group_long="")
     assert "SEV" in out_short_only
+
+
+def test_sanitize_trailing_dots_and_spaces() -> None:
+    """Windows: trailing dots and spaces are stripped."""
+    out = render_template("%title%", title="Show Name.  .  ")
+    assert out.endswith("Show Name") or out.endswith("Show-Name")
+    assert not out.rstrip().endswith(".") and not out.endswith(" ")
+
+
+def test_sanitize_reserved_dos_names_rewritten() -> None:
+    """Reserved DOS names (CON, PRN, etc.) are rewritten by appending underscore."""
+    for name in ("CON", "con", "PRN", "AUX", "NUL", "COM1", "LPT9"):
+        out = render_template("%title%", title=name)
+        assert out.endswith("_") and name.upper() in out or name.lower() in out
+    out = render_template("%title%%ext%", title="CON", extension=".mkv")
+    assert "CON_" in out and out.endswith(".mkv")
+
+
+def test_sanitize_reserved_dos_name_with_extension_preserves_dot() -> None:
+    """When title is a reserved DOS name plus extension (e.g. CON.mkv), output is CON_.mkv not CON_mkv."""
+    out = render_template("%title%", title="CON.mkv")
+    assert out == "CON_.mkv"

@@ -46,6 +46,8 @@ load_dotenv()
 
 # Exit code when user interrupts (e.g. Ctrl+C)
 EXIT_INTERRUPTED = 130
+# Exit code when completed with partial failures/skips/conflicts (spec Part B)
+EXIT_PARTIAL = 2
 
 PLEX_SUFFIX = " [anidb-%aid%]"
 
@@ -304,13 +306,18 @@ def _do_hashing_lookup_plan_apply(
             ed2k = compute_ed2k(group.video_path, progress_callback=_on_progress)
             info = get_file_info(db_path, size, ed2k)
             if info is not None and args.debug:
-                console.print(f"[dim][debug] Using cached AniDB data for size={size} ed2k={ed2k[:16]}…[/dim]")
+                console.print(
+                    f"[dim][debug] Using cached AniDB data for size={size} ed2k={ed2k[:16]}…[/dim]"
+                )
             if info is not None and client:
                 from anipyrenamer.anidb import _looks_like_hash
+
                 if _looks_like_hash(info.anime_title):
                     info = None
                     if args.debug:
-                        console.print("[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]")
+                        console.print(
+                            "[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]"
+                        )
             if info is not None:
                 console.print(
                     f"[blue]📁 Using local cache for {rich_escape(path_str)}[/blue] "
@@ -318,12 +325,14 @@ def _do_hashing_lookup_plan_apply(
                 )
             if info is None and client:
                 info = client.file_lookup(size, ed2k)
-                if info is None and client._session is None:
+                if info is None and not client.has_session:
                     client.login()
                     info = client.file_lookup(size, ed2k)
                 if info is not None:
                     set_file_info(db_path, info)
-                    console.print(f"[green]🌐 Fetched from AniDB for {rich_escape(path_str)}[/green]")
+                    console.print(
+                        f"[green]🌐 Fetched from AniDB for {rich_escape(path_str)}[/green]"
+                    )
             if info is None:
                 # Show in plan table so user sees the file and why it wasn't renamed
                 skip_item = RenameItem(
@@ -360,7 +369,6 @@ def _do_hashing_lookup_plan_apply(
 
     dest_conflicts = detect_destination_conflicts(flat_items)
     warnings: list[str] = []
-    flat_items, folder_conflicts = flatten_and_validate_folder_renames(all_items)
     for msg in folder_conflicts:
         warnings.append(f"[yellow]{msg}[/yellow]")
     for msg in dest_conflicts:
@@ -378,7 +386,8 @@ def _do_hashing_lookup_plan_apply(
 
     if args.dry_run:
         console.print("[green]Dry run; no files changed.[/green]")
-        sys.exit(0)
+        plan_skips = sum(1 for i in flat_items if i.kind == RenameKind.SKIP)
+        sys.exit(EXIT_PARTIAL if plan_skips > 0 else 0)
 
     do_apply = args.yes
     if not do_apply:
@@ -428,13 +437,17 @@ def _do_hashing_lookup_plan_apply(
     apply_group = Group(progress_apply_overall)
     with Live(apply_group, console=console, refresh_per_second=8) as live_apply:
         live_apply_ref[0] = live_apply
-        apply_plan(
+        applied_count, skipped_count = apply_plan(
             flat_items,
             db_path,
             dry_run=False,
             progress_callback=apply_progress,
         )
     console.print("[green]Renames applied.[/green]")
+    # Exit 2 when there were skips (plan skips or apply skips) per spec Part B
+    plan_skips = sum(1 for i in flat_items if i.kind == RenameKind.SKIP)
+    if plan_skips > 0 or skipped_count > 0:
+        sys.exit(EXIT_PARTIAL)
     sys.exit(0)
 
 

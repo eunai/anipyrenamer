@@ -67,6 +67,11 @@ class AniDBClient:
         self._packets_sent = 0
         self._burst_start: float = 0.0
 
+    @property
+    def has_session(self) -> bool:
+        """True if logged in (session key present)."""
+        return self._session is not None
+
     def _ensure_socket(self) -> socket.socket:
         if self._sock is None:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

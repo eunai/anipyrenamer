@@ -7,13 +7,33 @@ import re
 # Characters illegal in Windows filenames (space is allowed).
 ILLEGAL_CHARS = re.compile(r'[\\/:*?"<>|]+')
 
+# Windows reserved device names (case-insensitive); rewriting prevents "CON", "PRN", etc.
+_RESERVED_DOS_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+
 
 def _sanitize(s: str) -> str:
-    """Safe filename: no \\ / : * ? \" < > |; preserve spaces; collapse multiple spaces; trim."""
-    out = ILLEGAL_CHARS.sub("-", s.strip())
+    """Safe filename: no \\ / : * ? \" < > |; preserve spaces; collapse multiple spaces; trim.
+    Removes trailing dots/spaces (Windows). Rewrites reserved DOS names (CON, PRN, etc.) by appending '_'.
+    """
+    out = s.strip()
+    out = re.sub(r"[. \t]+$", "", out)  # trailing dots and spaces (Windows restriction)
+    out = ILLEGAL_CHARS.sub("-", out)
     out = re.sub(r"-+", "-", out).strip("-")
     out = re.sub(r"\s+", " ", out).strip()
-    return out or "Unknown"
+    out = out or "Unknown"
+    # Reserved DOS name: whole string or stem (before last dot)
+    lower = out.lower()
+    if lower in _RESERVED_DOS_NAMES:
+        return f"{out}_"
+    if "." in out:
+        stem, _, ext = out.rpartition(".")
+        if stem.lower() in _RESERVED_DOS_NAMES:
+            return f"{stem}_.{ext}"
+    return out
 
 
 def render_template(
@@ -62,7 +82,10 @@ def render_template(
 ) -> str:
     """Replace tokens; result sanitized for filenames. See DEFAULT_FILE_TEMPLATE and docs."""
     out = template
-    out = out.replace("%title%", _sanitize(title) or _sanitize(title_english) or _sanitize(title_romaji) or "Unknown")
+    out = out.replace(
+        "%title%",
+        _sanitize(title) or _sanitize(title_english) or _sanitize(title_romaji) or "Unknown",
+    )
     out = out.replace("%title_romaji%", _sanitize(title_romaji) or "")
     out = out.replace("%title_english%", _sanitize(title_english) or "")
     out = out.replace("%title_kanji%", _sanitize(title_kanji) or "")
