@@ -1,9 +1,12 @@
 """Tests for AniDB client (parsing and throttle, no live UDP)."""
+
 from __future__ import annotations
+
+import socket
 
 import pytest
 
-from anipyrenamer.anidb import AniDBConfig, _looks_like_hash, _parse_file_response
+from anipyrenamer.anidb import AniDBClient, AniDBConfig, _looks_like_hash, _parse_file_response
 
 
 def test_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,3 +50,91 @@ def test_looks_like_hash_crc32_not_used_as_title() -> None:
     assert _looks_like_hash("12345678") is False  # digits only, no a-f
     assert _looks_like_hash("ab") is False  # too short
     assert _looks_like_hash("e" * 32) is True  # MD5/ED2K length
+
+
+def test_send_recv_retries_transient_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_send_recv retries on timeout and eventually returns reply."""
+
+    class FakeSock:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def sendto(self, payload: bytes, addr: tuple[str, int]) -> None:  # noqa: ARG002
+            return None
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:  # noqa: ARG002
+            self.calls += 1
+            if self.calls == 1:
+                raise socket.timeout("timed out")
+            return b"200 SESSION LOGIN ACCEPTED", ("api.anidb.net", 9000)
+
+    cfg = AniDBConfig("u", "p", "c", "1", 0)
+    client = AniDBClient(cfg)
+    fake = FakeSock()
+    monkeypatch.setattr(client, "_ensure_socket", lambda: fake)
+    monkeypatch.setattr(client, "_throttle", lambda: None)
+    monkeypatch.setattr("anipyrenamer.anidb.time.sleep", lambda _: None)
+    monkeypatch.setattr("anipyrenamer.anidb.random.uniform", lambda a, b: 0.0)
+
+    reply = client._send_recv("PING")
+    assert "200 SESSION" in reply
+
+
+def test_mylist_entry_by_fid_parses_221_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AniDBConfig("u", "p", "c", "1", 0)
+    client = AniDBClient(cfg)
+    client._session = "sess"
+
+    monkeypatch.setattr(
+        client,
+        "_send_recv",
+        lambda _msg: "221 MYLIST\n11|22|33|44|55|100|1|200|Internal HDD|src|other|0",
+    )
+    entry = client.mylist_entry_by_fid(22)
+    assert entry is not None
+    assert entry.lid == 11
+    assert entry.fid == 22
+    assert entry.state == 1
+    assert entry.storage == "Internal HDD"
+
+
+def test_mylist_add_or_update_by_fid_add_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AniDBConfig("u", "p", "c", "1", 0)
+    client = AniDBClient(cfg)
+    client._session = "sess"
+
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "210 MYLIST ENTRY ADDED\n99")
+    ok, msg = client.mylist_add_or_update_by_fid(
+        22,
+        add_to_mylist=True,
+        state=1,
+        storage="Internal HDD",
+        viewed=True,
+    )
+    assert ok is True
+    assert "Added" in msg
+
+
+def test_mylist_add_or_update_by_fid_existing_entry_then_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = AniDBConfig("u", "p", "c", "1", 0)
+    client = AniDBClient(cfg)
+    client._session = "sess"
+
+    replies = iter(
+        [
+            "310 FILE ALREADY IN MYLIST\n11|22|33|44|55|100|1|200|Internal HDD|src|other|0",
+            "311 MYLIST ENTRY EDITED",
+        ]
+    )
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: next(replies))
+    ok, msg = client.mylist_add_or_update_by_fid(
+        22,
+        add_to_mylist=True,
+        state=2,
+        storage="External CD/DVD",
+        viewed=False,
+    )
+    assert ok is True
+    assert "updated" in msg.lower()

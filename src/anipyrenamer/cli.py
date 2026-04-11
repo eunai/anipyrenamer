@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 import signal
 import sys
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -34,19 +38,39 @@ from anipyrenamer.cache import (
 )
 from anipyrenamer.discovery import discover, get_file_size
 from anipyrenamer.ed2k import compute_ed2k
-from anipyrenamer.models import RenameItem, RenameKind
+from anipyrenamer.models import FileInfo, RenameItem, RenameKind
+from anipyrenamer.mylist import run_mylist_wizard
 from anipyrenamer.naming import DEFAULT_FILE_TEMPLATE, DEFAULT_FOLDER_TEMPLATE
 from anipyrenamer.plan import build_plan
 from anipyrenamer.validation import (
-    detect_destination_conflicts,
+    analyze_destination_conflicts,
     flatten_and_validate_folder_renames,
 )
 
-load_dotenv()
+
+def _get_well_known_env_path() -> Path | None:
+    """Path to .env in a well-known config dir for global installs (Windows: %%APPDATA%%/anipyrenamer, Unix: ~/.config/anipyrenamer)."""
+    if os.name == "nt":
+        apd = os.environ.get("APPDATA")
+        if not apd:
+            return None
+        return Path(apd) / "anipyrenamer" / ".env"
+    return Path.home() / ".config" / "anipyrenamer" / ".env"
+
+
+def _load_env() -> None:
+    """Load .env: project/package dir first (dev), then well-known path (global install). Later load does not override (override=False)."""
+    load_dotenv()
+    well_known = _get_well_known_env_path()
+    if well_known is not None:
+        load_dotenv(well_known)
+
+
+_load_env()
 
 # Exit code when user interrupts (e.g. Ctrl+C)
 EXIT_INTERRUPTED = 130
-# Exit code when completed with partial failures/skips/conflicts (spec Part B)
+# Exit code when completed with partial failures/skips/conflicts (spec §6)
 EXIT_PARTIAL = 2
 
 PLEX_SUFFIX = " [anidb-%aid%]"
@@ -65,6 +89,97 @@ def _disconnect_anidb(client: Any, console: Console, had_session: bool) -> None:
         client.logout()
     if had_session:
         console.print("[cyan]✓ Disconnected from AniDB.[/cyan]")
+
+
+def _prompt_confirmation(message: str) -> str:
+    """
+    Prompt user with standardized confirmation format: (Y/n/a).
+
+    Returns:
+        "y" -> yes (including Enter default)
+        "n" -> no
+        "a" -> yes to all remaining
+    """
+    while True:
+        try:
+            raw = input(f"{message} (Y/n/a): ").strip().lower()
+        except EOFError:
+            return "y"
+
+        if raw == "":
+            return "y"
+        if raw in ("y", "yes"):
+            return "y"
+        if raw == "n":
+            return "n"
+        if raw == "a":
+            return "a"
+        print("Please enter Y, n, or a.")
+
+
+def _normalized_dest_key(path_str: str, *, case_insensitive: bool) -> str:
+    p = Path(path_str)
+    try:
+        key = p.resolve().as_posix() if p.exists() else p.as_posix()
+    except OSError:
+        key = p.as_posix()
+    return key.casefold() if case_insensitive else key
+
+
+def _is_same_existing_path(a: Path, b: Path) -> bool:
+    """True when both paths exist and resolve to the same filesystem entry."""
+    if not a.exists() or not b.exists():
+        return False
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
+
+
+def _deduped_path(dst: Path, *, strategy: str, old_path: str, attempt: int) -> Path:
+    stem = dst.stem
+    suffix = dst.suffix
+    if strategy == "hash":
+        digest = hashlib.sha1(old_path.encode("utf-8")).hexdigest()[:8]
+        candidate_stem = f"{stem}-{digest}" if attempt == 1 else f"{stem}-{digest}-{attempt}"
+    elif strategy == "counter":
+        candidate_stem = f"{stem} ({attempt + 1})"
+    else:
+        candidate_stem = stem + "-dup" if attempt == 1 else f"{stem}-dup-{attempt}"
+    return dst.with_name(candidate_stem + suffix)
+
+
+def _apply_suffix_conflict_resolution(items: list[RenameItem], *, strategy: str) -> None:
+    case_insensitive = os.name == "nt"
+    reserved: set[str] = set()
+    for item in items:
+        if item.kind != RenameKind.FILE:
+            continue
+
+        src = Path(item.old_path)
+        dst = Path(item.new_path)
+        key = _normalized_dest_key(item.new_path, case_insensitive=case_insensitive)
+        exists_conflict = dst.exists() and not _is_same_existing_path(src, dst)
+        if not exists_conflict and key not in reserved:
+            reserved.add(key)
+            continue
+
+        resolved = False
+        for attempt in range(1, 256):
+            candidate = _deduped_path(
+                dst, strategy=strategy, old_path=item.old_path, attempt=attempt
+            )
+            candidate_key = _normalized_dest_key(str(candidate), case_insensitive=case_insensitive)
+            candidate_conflict = candidate.exists() and not _is_same_existing_path(src, candidate)
+            if candidate_conflict or candidate_key in reserved:
+                continue
+            item.new_path = str(candidate)
+            reserved.add(candidate_key)
+            resolved = True
+            break
+
+        if not resolved:
+            reserved.add(key)
 
 
 def main() -> None:
@@ -151,6 +266,34 @@ def main() -> None:
         action="store_true",
         help="Clear entire local AniDB file cache before run.",
     )
+    parser.add_argument(
+        "--on-conflict",
+        choices=("skip", "suffix", "fail"),
+        default="skip",
+        help="Conflict behavior for existing/colliding destinations (default: skip).",
+    )
+    parser.add_argument(
+        "--name-dedupe",
+        choices=("none", "counter", "hash"),
+        default="counter",
+        help="Deterministic dedupe strategy used with --on-conflict=suffix (default: counter).",
+    )
+    parser.add_argument(
+        "--preview-format",
+        choices=("table", "json"),
+        default="table",
+        help="Rename plan preview output format (default: table).",
+    )
+    parser.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Ignore cache TTL and refetch AniDB data for scanned files when online.",
+    )
+    parser.add_argument(
+        "--mylist",
+        action="store_true",
+        help="After pipeline completion, run interactive MyList update wizard.",
+    )
     args = parser.parse_args()
 
     if not args.paths:
@@ -170,6 +313,7 @@ def main() -> None:
         console.print("[yellow]No video files found.[/yellow]")
         sys.exit(0)
 
+    precomputed_hashes: dict[str, tuple[int, str]] = {}
     if args.clear_cache:
         entries: list[tuple[int, str]] = []
         with Progress(
@@ -182,6 +326,7 @@ def main() -> None:
                 size = get_file_size(group.video_path)
                 ed2k = compute_ed2k(group.video_path)
                 entries.append((size, ed2k))
+                precomputed_hashes[group.video_path] = (size, ed2k)
                 progress.advance(task)
         n = clear_file_anidb_entries(db_path, entries)
         console.print(f"[dim]Cleared AniDB cache for {n} file(s) in this scan.[/dim]")
@@ -233,7 +378,9 @@ def main() -> None:
         signal.signal(sigterm, _sigterm_to_interrupt)
 
     try:
-        _run_after_anidb_ready(args, client, had_session, console, db_path, groups)
+        _run_after_anidb_ready(
+            args, client, had_session, console, db_path, groups, precomputed_hashes
+        )
     except KeyboardInterrupt:
         sys.exit(EXIT_INTERRUPTED)
 
@@ -245,10 +392,11 @@ def _run_after_anidb_ready(
     console: Console,
     db_path: str,
     groups: list[Any],
+    precomputed_hashes: dict[str, tuple[int, str]],
 ) -> None:
     """Run hashing, lookup, plan, preview, apply. Guarantees AniDB logout in finally."""
     try:
-        _do_hashing_lookup_plan_apply(args, client, console, db_path, groups)
+        _do_hashing_lookup_plan_apply(args, client, console, db_path, groups, precomputed_hashes)
     finally:
         _disconnect_anidb(client, console, had_session)
 
@@ -259,10 +407,12 @@ def _do_hashing_lookup_plan_apply(
     console: Console,
     db_path: str,
     groups: list[Any],
+    precomputed_hashes: dict[str, tuple[int, str]],
 ) -> None:
     """Hashing and lookup, then plan, preview, and optionally apply."""
     console.print("[bold]Hashing and lookup[/bold]")
     all_items: list[tuple[list[RenameItem], str]] = []  # (items, batch_id placeholder)
+    resolved_infos: list[FileInfo] = []
     # Overall: bar only (no ETA at top). Per-file: single live line (path + bar + MB + speed + ETA).
     progress_overall = Progress(
         SpinnerColumn(),
@@ -287,24 +437,35 @@ def _do_hashing_lookup_plan_apply(
     file_task = progress_file.add_task("", total=1, visible=False)
     group_render = Group(progress_overall, progress_file)
 
+    max_consecutive_timeouts = 3
+    consecutive_timeouts = 0
+    anidb_aborted = False
+
     with Live(group_render, console=console, refresh_per_second=8) as live:
         for i, group in enumerate(groups):
             path_str = str(group.video_path)
-            size = get_file_size(group.video_path)
-            progress_file.update(
-                file_task,
-                description=f"[yellow]{rich_escape(path_str)}[/yellow]",
-                total=max(1, size),
-                completed=0,
-                visible=True,
-            )
+            cached_hash = precomputed_hashes.get(group.video_path)
+            if cached_hash is not None:
+                size, ed2k = cached_hash
+                progress_file.update(file_task, visible=False)
+            else:
+                size = get_file_size(group.video_path)
+                progress_file.update(
+                    file_task,
+                    description=f"[yellow]{rich_escape(path_str)}[/yellow]",
+                    total=max(1, size),
+                    completed=0,
+                    visible=True,
+                )
 
-            def _on_progress(br: int, tot: int) -> None:
-                progress_file.update(file_task, completed=br, total=max(1, tot))
-                live.refresh()
+                def _on_progress(br: int, tot: int) -> None:
+                    progress_file.update(file_task, completed=br, total=max(1, tot))
+                    live.refresh()
 
-            ed2k = compute_ed2k(group.video_path, progress_callback=_on_progress)
+                ed2k = compute_ed2k(group.video_path, progress_callback=_on_progress)
             info = get_file_info(db_path, size, ed2k)
+            if args.refresh_cache and client is not None:
+                info = None
             if info is not None and args.debug:
                 console.print(
                     f"[dim][debug] Using cached AniDB data for size={size} ed2k={ed2k[:16]}…[/dim]"
@@ -323,11 +484,25 @@ def _do_hashing_lookup_plan_apply(
                     f"[blue]📁 Using local cache for {rich_escape(path_str)}[/blue] "
                     "(use [bold]--clear-cache[/bold] to refetch from AniDB)"
                 )
-            if info is None and client:
-                info = client.file_lookup(size, ed2k)
-                if info is None and not client.has_session:
-                    client.login()
+            if info is None and client and not anidb_aborted:
+                try:
                     info = client.file_lookup(size, ed2k)
+                    if info is None and not client.has_session:
+                        client.login()
+                        info = client.file_lookup(size, ed2k)
+                    consecutive_timeouts = 0
+                except TimeoutError:
+                    consecutive_timeouts += 1
+                    console.print(
+                        f"[red]AniDB lookup timed out for {rich_escape(path_str)}; skipping.[/red]"
+                    )
+                    if consecutive_timeouts >= max_consecutive_timeouts:
+                        console.print(
+                            f"[red]{max_consecutive_timeouts} consecutive AniDB timeouts; "
+                            "skipping remaining AniDB lookups.[/red] "
+                            "Try again later or use [bold]--offline[/bold] to use cache only."
+                        )
+                        anidb_aborted = True
                 if info is not None:
                     set_file_info(db_path, info)
                     console.print(
@@ -356,6 +531,7 @@ def _do_hashing_lookup_plan_apply(
                     folder_tpl = _apply_plex_suffix(folder_tpl)
             items = build_plan(group, info, args.template, args.dest, folder_template=folder_tpl)
             all_items.append((items, group.video_path))
+            resolved_infos.append(info)
             progress_overall.advance(overall_task)
             progress_overall.update(
                 overall_task,
@@ -367,7 +543,10 @@ def _do_hashing_lookup_plan_apply(
         console.print("[yellow]No video files found.[/yellow]")
         sys.exit(0)
 
-    dest_conflicts = detect_destination_conflicts(flat_items)
+    if args.on_conflict == "suffix":
+        _apply_suffix_conflict_resolution(flat_items, strategy=args.name_dedupe)
+
+    dest_conflicts, conflict_indexes = analyze_destination_conflicts(flat_items)
     warnings: list[str] = []
     for msg in folder_conflicts:
         warnings.append(f"[yellow]{msg}[/yellow]")
@@ -377,7 +556,23 @@ def _do_hashing_lookup_plan_apply(
         console.print(Panel("\n".join(warnings), title="Warnings", border_style="yellow"))
 
     console.print("[bold]Rename plan[/bold]")
-    preview_plan(flat_items, console=console)
+    if args.preview_format == "json":
+        preview_items = [
+            {
+                "old_path": item.old_path,
+                "new_path": item.new_path,
+                "kind": item.kind.value,
+                "anime_type": item.anime_type,
+            }
+            for item in flat_items
+        ]
+        console.print_json(json.dumps(preview_items))
+    else:
+        preview_plan(flat_items, console=console)
+
+    if conflict_indexes and args.on_conflict == "fail":
+        console.print("[red]Aborted due to destination conflicts (--on-conflict=fail).[/red]")
+        sys.exit(1)
 
     file_items_count = sum(1 for i in flat_items if i.kind == RenameKind.FILE)
     if file_items_count == 0:
@@ -387,19 +582,33 @@ def _do_hashing_lookup_plan_apply(
     if args.dry_run:
         console.print("[green]Dry run; no files changed.[/green]")
         plan_skips = sum(1 for i in flat_items if i.kind == RenameKind.SKIP)
-        sys.exit(EXIT_PARTIAL if plan_skips > 0 else 0)
+        exit_code = EXIT_PARTIAL if plan_skips > 0 or len(dest_conflicts) > 0 else 0
+        sys.exit(
+            _run_mylist_if_requested(
+                args=args,
+                client=client,
+                console=console,
+                resolved_infos=resolved_infos,
+                exit_code=exit_code,
+            )
+        )
 
     do_apply = args.yes
     if not do_apply:
-        try:
-            reply = input("Apply these renames? [y/N] ").strip().lower()
-            do_apply = reply in ("y", "yes")
-        except (EOFError, KeyboardInterrupt):
-            do_apply = False
+        reply = _prompt_confirmation("Apply these renames?")
+        do_apply = reply in ("y", "a")
 
     if not do_apply:
         console.print("[red]Aborted.[/red]")
-        sys.exit(0)
+        sys.exit(
+            _run_mylist_if_requested(
+                args=args,
+                client=client,
+                console=console,
+                resolved_infos=resolved_infos,
+                exit_code=0,
+            )
+        )
 
     console.print("[bold]Apply[/bold]")
     file_items = [i for i in flat_items if i.kind == RenameKind.FILE]
@@ -444,11 +653,42 @@ def _do_hashing_lookup_plan_apply(
             progress_callback=apply_progress,
         )
     console.print("[green]Renames applied.[/green]")
-    # Exit 2 when there were skips (plan skips or apply skips) per spec Part B
+    # Exit 2 when there were skips (plan skips or apply skips) per spec §6
     plan_skips = sum(1 for i in flat_items if i.kind == RenameKind.SKIP)
+    exit_code = 0
     if plan_skips > 0 or skipped_count > 0:
-        sys.exit(EXIT_PARTIAL)
-    sys.exit(0)
+        exit_code = EXIT_PARTIAL
+    sys.exit(
+        _run_mylist_if_requested(
+            args=args,
+            client=client,
+            console=console,
+            resolved_infos=resolved_infos,
+            exit_code=exit_code,
+        )
+    )
+
+
+def _run_mylist_if_requested(
+    *,
+    args: argparse.Namespace,
+    client: Any,
+    console: Console,
+    resolved_infos: list[FileInfo],
+    exit_code: int,
+) -> int:
+    """Run MyList wizard when requested and fold failures into exit code semantics."""
+    if not args.mylist:
+        return exit_code
+    mylist_result = run_mylist_wizard(
+        console=console,
+        client=client,
+        file_infos=resolved_infos,
+        confirm=_prompt_confirmation,
+    )
+    if mylist_result.attempted and mylist_result.failed > 0 and exit_code == 0:
+        return EXIT_PARTIAL
+    return exit_code
 
 
 if __name__ == "__main__":

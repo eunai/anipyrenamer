@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from anipyrenamer.models import RenameItem, RenameKind
@@ -43,26 +44,74 @@ def _same_path(a: Path, b: Path) -> bool:
         return False
 
 
-def detect_destination_conflicts(items: list[RenameItem]) -> list[str]:
-    """
-    Check for existing destinations (no implicit overwrite; apply will skip these).
-    Returns list of human-readable conflict messages.
-    """
-    conflicts: list[str] = []
-    seen: set[str] = set()
+def _dest_key(path_str: str, *, case_insensitive: bool) -> str:
+    p = Path(path_str)
+    try:
+        key = p.resolve().as_posix() if p.exists() else p.as_posix()
+    except OSError:
+        key = p.as_posix()
+    if case_insensitive:
+        return key.casefold()
+    return key
 
-    for item in items:
+
+def analyze_destination_conflicts(
+    items: list[RenameItem],
+    *,
+    case_insensitive: bool | None = None,
+) -> tuple[list[str], set[int]]:
+    """
+    Analyze destination conflicts.
+
+    Detects:
+    - Existing destination conflicts on disk.
+    - Planned collisions where multiple FILE items target the same destination
+      (including case-only collisions on case-insensitive filesystems).
+
+    Returns (messages, conflicting_item_indexes).
+    """
+    if case_insensitive is None:
+        case_insensitive = os.name == "nt"
+
+    conflicts: list[str] = []
+    conflict_indexes: set[int] = set()
+    seen_existing_keys: set[str] = set()
+    planned_targets: dict[str, list[int]] = {}
+
+    for idx, item in enumerate(items):
         if item.kind != RenameKind.FILE:
             continue
+
         dst = Path(item.new_path)
+        key = _dest_key(item.new_path, case_insensitive=case_insensitive)
+        planned_targets.setdefault(key, []).append(idx)
+
         if not dst.exists():
             continue
         src = Path(item.old_path)
         if src.exists() and _same_path(src, dst):
             continue
-        key = dst.resolve().as_posix()
-        if key not in seen:
-            seen.add(key)
+        if key not in seen_existing_keys:
+            seen_existing_keys.add(key)
             conflicts.append(f"Destination already exists: {item.new_path}; will skip.")
+        conflict_indexes.add(idx)
 
+    for indexes in planned_targets.values():
+        if len(indexes) <= 1:
+            continue
+        first = items[indexes[0]]
+        conflicts.append(
+            f"Planned destination collision: {first.new_path}; multiple files target this path; will skip."
+        )
+        conflict_indexes.update(indexes)
+
+    return conflicts, conflict_indexes
+
+
+def detect_destination_conflicts(items: list[RenameItem]) -> list[str]:
+    """
+    Check for existing destinations (no implicit overwrite; apply will skip these).
+    Returns list of human-readable conflict messages.
+    """
+    conflicts, _ = analyze_destination_conflicts(items)
     return conflicts

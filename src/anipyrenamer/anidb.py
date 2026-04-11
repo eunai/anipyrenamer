@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import socket
 import time
@@ -17,6 +18,26 @@ FILE_AMASK = "F2FCF0C0"
 # Throttle: first 5 packets, then 1 packet per 2.5 s
 BURST_SIZE = 5
 PACKET_INTERVAL = 2.5
+MAX_RETRIES = 3
+RETRY_BASE_SECONDS = 0.5
+
+
+@dataclass
+class MyListEntry:
+    """Subset of AniDB MYLIST response fields used by Phase 2 wizard."""
+
+    lid: int
+    fid: int
+    eid: int
+    aid: int
+    gid: int
+    date: int
+    state: int
+    viewdate: int
+    storage: str
+    source: str
+    other: str
+    filestate: int
 
 
 @dataclass
@@ -54,6 +75,15 @@ def _looks_like_hash(s: str) -> bool:
     if len(s) >= 16 and sum(c in "abcdefABCDEF" for c in s) >= 2:
         return True
     return False
+
+
+def _extract_reply_code(reply: str) -> int | None:
+    """Extract numeric AniDB reply code from first line (supports tagged replies)."""
+    first = reply.split("\n", 1)[0].strip()
+    match = re.search(r"\b(\d{3})\b", first)
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 class AniDBClient:
@@ -94,18 +124,32 @@ class AniDBClient:
             time.sleep(required - elapsed)
 
     def _send_recv(self, msg: str) -> str:
-        self._throttle()
-        sock = self._ensure_socket()
-        if self._debug:
-            log_msg = re.sub(r"pass=\w+", "pass=***", msg)
-            print(f"[anidb] >>> {log_msg}")
-        sock.sendto(msg.encode("utf-8"), (ANIDB_HOST, ANIDB_PORT))
-        data, _ = sock.recvfrom(4096)
-        reply = data.decode("utf-8", errors="replace").strip()
-        if self._debug:
-            preview = reply[:500] + "..." if len(reply) > 500 else reply
-            print(f"[anidb] <<< {preview}")
-        return reply
+        last_error: Exception | None = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                self._throttle()
+                sock = self._ensure_socket()
+                if self._debug:
+                    log_msg = re.sub(r"pass=\w+", "pass=***", msg)
+                    print(f"[anidb] >>> {log_msg}")
+                sock.sendto(msg.encode("utf-8"), (ANIDB_HOST, ANIDB_PORT))
+                data, _ = sock.recvfrom(4096)
+                reply = data.decode("utf-8", errors="replace").strip()
+                if self._debug:
+                    preview = reply[:500] + "..." if len(reply) > 500 else reply
+                    print(f"[anidb] <<< {preview}")
+                return reply
+            except (socket.timeout, OSError) as exc:
+                last_error = exc
+                if attempt >= MAX_RETRIES:
+                    break
+                # Jittered backoff for transient UDP/network failures.
+                backoff = RETRY_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(0.0, 0.35)
+                time.sleep(backoff)
+
+        raise TimeoutError(
+            f"AniDB request failed after {MAX_RETRIES} attempts due to timeout/network issues."
+        ) from last_error
 
     def login(self) -> tuple[bool, str]:
         """AUTH; store session key. Returns (True, '') if 200/201, else (False, reply)."""
@@ -122,24 +166,29 @@ class AniDBClient:
             return (True, "")
         return (False, reply)
 
-    def logout(self) -> None:
-        """LOGOUT and close socket. Uses a short timeout so the server reliably sees LOGOUT
-        (avoids 'useless connect' when LOGOUT would otherwise time out)."""
-        if self._session and self._sock:
-            prev_timeout = self._sock.gettimeout()
+    def _send_recv_once(self, msg: str, *, timeout: float = 5.0) -> str | None:
+        """Single send/recv attempt with a short timeout. Returns reply or None on failure."""
+        sock = self._ensure_socket()
+        prev = sock.gettimeout()
+        try:
+            sock.settimeout(timeout)
+            self._throttle()
+            sock.sendto(msg.encode("utf-8"), (ANIDB_HOST, ANIDB_PORT))
+            data, _ = sock.recvfrom(4096)
+            return data.decode("utf-8", errors="replace").strip()
+        except Exception:
+            return None
+        finally:
             try:
-                self._sock.settimeout(5.0)
-                for _ in range(2):
-                    try:
-                        self._send_recv(f"LOGOUT s={self._session}")
-                        break
-                    except Exception:
-                        self._sock.settimeout(5.0)
-            finally:
-                try:
-                    self._sock.settimeout(prev_timeout)
-                except Exception:
-                    pass
+                sock.settimeout(prev)
+            except Exception:
+                pass
+
+    def logout(self) -> None:
+        """LOGOUT and close socket. Single lightweight attempt (no full retry loop)
+        so the server reliably sees LOGOUT without excessive UDP traffic."""
+        if self._session and self._sock:
+            self._send_recv_once(f"LOGOUT s={self._session}", timeout=5.0)
             self._session = None
         if self._sock:
             try:
@@ -179,6 +228,138 @@ class AniDBClient:
                 info.group_name = long_name or short
         return info
 
+    def mylist_entry_by_fid(self, fid: int) -> MyListEntry | None:
+        """Return MyList entry for a file id, or None when not found."""
+        if not self._session:
+            return None
+        reply = self._send_recv(f"MYLIST fid={fid}&s={self._session}")
+        code = _extract_reply_code(reply)
+        if code == 506:
+            self._session = None
+            return None
+        if code != 221:
+            return None
+        lines = reply.split("\n")
+        if len(lines) < 2:
+            return None
+        fields = [p.strip() for p in lines[1].split("|")]
+        if len(fields) < 12:
+            return None
+        return MyListEntry(
+            lid=int(fields[0] or 0),
+            fid=int(fields[1] or 0),
+            eid=int(fields[2] or 0),
+            aid=int(fields[3] or 0),
+            gid=int(fields[4] or 0),
+            date=int(fields[5] or 0),
+            state=int(fields[6] or 0),
+            viewdate=int(fields[7] or 0),
+            storage=fields[8] or "",
+            source=fields[9] or "",
+            other=fields[10] or "",
+            filestate=int(fields[11] or 0),
+        )
+
+    def mylist_add_or_update_by_fid(
+        self,
+        fid: int,
+        *,
+        add_to_mylist: bool,
+        state: int | None = None,
+        storage: str | None = None,
+        viewed: bool | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Add/update a MyList entry by fid.
+
+        Returns (success, status_message).
+        """
+        if not self._session:
+            return (False, "No active AniDB session.")
+
+        update_requested = state is not None or storage is not None or viewed is not None
+        if add_to_mylist:
+            params = [f"MYLISTADD fid={fid}", f"s={self._session}"]
+            if state is not None:
+                params.append(f"state={state}")
+            if storage:
+                params.append(f"storage={storage}")
+            if viewed is not None:
+                params.append(f"viewed={1 if viewed else 0}")
+                if viewed:
+                    params.append(f"viewdate={int(time.time())}")
+            reply = self._send_recv("&".join(params))
+            code = _extract_reply_code(reply)
+            if code == 506:
+                self._session = None
+                return (False, "Invalid session.")
+            if code == 210:
+                return (True, "Added to MyList.")
+            if code == 310:
+                # Already in MyList; if updates are requested, edit existing lid.
+                if not update_requested:
+                    return (True, "Already in MyList.")
+                lines = reply.split("\n")
+                if len(lines) < 2:
+                    return (False, "Already in MyList, but could not parse entry id for update.")
+                lid_field = lines[1].split("|", 1)[0].strip()
+                lid = int(lid_field) if lid_field.isdigit() else 0
+                if lid <= 0:
+                    return (False, "Already in MyList, but could not parse entry id for update.")
+                return self._edit_mylist_entry(
+                    lid=lid,
+                    state=state,
+                    storage=storage,
+                    viewed=viewed,
+                )
+            if code == 320:
+                return (False, "No such file on AniDB.")
+            return (False, f"AniDB MYLISTADD failed ({code}).")
+
+        # Update-only mode (do not add if missing)
+        if not update_requested:
+            return (True, "No MyList changes requested.")
+        entry = self.mylist_entry_by_fid(fid)
+        if entry is None or entry.lid <= 0:
+            return (False, "No existing MyList entry to update.")
+        return self._edit_mylist_entry(
+            lid=entry.lid,
+            state=state,
+            storage=storage,
+            viewed=viewed,
+        )
+
+    def _edit_mylist_entry(
+        self,
+        *,
+        lid: int,
+        state: int | None,
+        storage: str | None,
+        viewed: bool | None,
+    ) -> tuple[bool, str]:
+        """Edit an existing MyList entry by lid."""
+        if not self._session:
+            return (False, "No active AniDB session.")
+        params = [f"MYLISTADD lid={lid}", "edit=1", f"s={self._session}"]
+        if state is not None:
+            params.append(f"state={state}")
+        if storage:
+            params.append(f"storage={storage}")
+        if viewed is not None:
+            params.append(f"viewed={1 if viewed else 0}")
+            if viewed:
+                params.append(f"viewdate={int(time.time())}")
+        reply = self._send_recv("&".join(params))
+        code = _extract_reply_code(reply)
+        if code == 506:
+            self._session = None
+            return (False, "Invalid session.")
+        if code == 311:
+            return (True, "MyList entry updated.")
+        if code == 411:
+            return (False, "No such MyList entry.")
+        return (False, f"AniDB MYLIST edit failed ({code}).")
+
     def _fill_anime_info(self, info: FileInfo) -> None:
         """ANIME aid=; fill title variants, year, type, categories, ep_count."""
         if not self._session or not info.aid:
@@ -190,6 +371,7 @@ class AniDBClient:
         # aid|eps|ep count|special cnt|rating|votes|...|year|type|romaji|kanji|english|other|short names|synonyms|category list
         if len(parts) >= 19:
             info.ep_count = (parts[2] or "").strip()
+            info.ep_highest = (parts[1] or "").strip()
             info.year_begin = (parts[10] or "").strip()
             info.year_end = info.year_begin  # single year in default format
             info.anime_type = (parts[11] or "").strip()

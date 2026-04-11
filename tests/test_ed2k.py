@@ -1,10 +1,9 @@
 """Tests for ED2K hashing."""
+
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
-import pytest
 
 from anipyrenamer.ed2k import ED2K_CHUNK_SIZE, compute_ed2k
 

@@ -20,10 +20,10 @@ def _sanitize(s: str) -> str:
     Removes trailing dots/spaces (Windows). Rewrites reserved DOS names (CON, PRN, etc.) by appending '_'.
     """
     out = s.strip()
-    out = re.sub(r"[. \t]+$", "", out)  # trailing dots and spaces (Windows restriction)
     out = ILLEGAL_CHARS.sub("-", out)
     out = re.sub(r"-+", "-", out).strip("-")
     out = re.sub(r"\s+", " ", out).strip()
+    out = re.sub(r"[. \t]+$", "", out)  # trailing dots/spaces after all substitutions (Windows)
     out = out or "Unknown"
     # Reserved DOS name: whole string or stem (before last dot)
     lower = out.lower()

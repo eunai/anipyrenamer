@@ -1,11 +1,11 @@
 """Tests for rename plan building."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
-from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKind
+from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameKind
 from anipyrenamer.plan import build_plan
 
 
@@ -34,7 +34,9 @@ def test_build_plan_in_place() -> None:
     assert items[0].old_path == "/dir/Show - 01.mkv"
     assert items[0].new_path.endswith(".mkv")
     # Title sanitized to no spaces; epno and content present
-    assert "01" in items[0].new_path and ("My-Show" in items[0].new_path or "My Show" in items[0].new_path)
+    assert "01" in items[0].new_path and (
+        "My-Show" in items[0].new_path or "My Show" in items[0].new_path
+    )
     assert items[1].old_path == "/dir/Show - 01.ass"
     assert items[1].new_path.endswith(".ass")
 
@@ -42,8 +44,16 @@ def test_build_plan_in_place() -> None:
 def test_build_plan_with_dest() -> None:
     group = DiscoveredGroup(video_path="/a/v.mkv", sidecar_paths=())
     info = FileInfo(
-        1, 2, 3, 4, 100, "e" * 32, "high", "TV",
-        anime_title="T", episode_number="1",
+        1,
+        2,
+        3,
+        4,
+        100,
+        "e" * 32,
+        "high",
+        "TV",
+        anime_title="T",
+        episode_number="1",
     )
     # Use short template to avoid needing all fields
     items = build_plan(group, info, "%title% - %epno%%ext%", dest_root="/dest")
@@ -95,11 +105,22 @@ def test_build_plan_folder_template_with_dest_omits_folder_rename() -> None:
     """With dest_root set, folder_template is ignored (no folder item)."""
     group = DiscoveredGroup(video_path="/a/v.mkv", sidecar_paths=())
     info = FileInfo(
-        1, 2, 3, 4, 100, "e" * 32, "high", "TV",
-        anime_title="T", episode_number="1", group_name="G",
+        1,
+        2,
+        3,
+        4,
+        100,
+        "e" * 32,
+        "high",
+        "TV",
+        anime_title="T",
+        episode_number="1",
+        group_name="G",
     )
     items = build_plan(
-        group, info, "%title% - %epno%%ext%",
+        group,
+        info,
+        "%title% - %epno%%ext%",
         dest_root="/dest",
         folder_template="%title% [%group%]%ext%",
     )
@@ -144,14 +165,27 @@ def test_build_plan_with_plex_folder_template() -> None:
 def test_build_plan_two_groups_same_dir_same_folder_target() -> None:
     """Two episodes in the same folder produce file items with the same target parent (no directory items)."""
     info = FileInfo(
-        fid=1, aid=2, eid=3, gid=4, size=100, ed2k="x" * 32,
-        quality="high", source="TV",
-        anime_title="Show", episode_number="01", episode_title="Ep1", group_name="Subs",
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=100,
+        ed2k="x" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Ep1",
+        group_name="Subs",
     )
     group1 = DiscoveredGroup(video_path="/root/AnimeDir/ep01.mkv", sidecar_paths=())
     group2 = DiscoveredGroup(video_path="/root/AnimeDir/ep02.mkv", sidecar_paths=())
-    items1 = build_plan(group1, info, "%title% - %epno%%ext%", folder_template="%title% [%group%]%ext%")
-    items2 = build_plan(group2, info, "%title% - %epno%%ext%", folder_template="%title% [%group%]%ext%")
+    items1 = build_plan(
+        group1, info, "%title% - %epno%%ext%", folder_template="%title% [%group%]%ext%"
+    )
+    items2 = build_plan(
+        group2, info, "%title% - %epno%%ext%", folder_template="%title% [%group%]%ext%"
+    )
     assert len(items1) == 1 and len(items2) == 1
     assert items1[0].kind == RenameKind.FILE and items2[0].kind == RenameKind.FILE
     assert Path(items1[0].new_path).parent == Path(items2[0].new_path).parent

@@ -1,7 +1,6 @@
 """Tests for preview and apply."""
-from __future__ import annotations
 
-import tempfile
+from __future__ import annotations
 from pathlib import Path
 
 import pytest
@@ -28,12 +27,11 @@ def test_preview_plan_with_skip_item_no_crash(capsys: pytest.CaptureFixture[str]
 
 def test_preview_plan_sorted_by_folder_then_episode() -> None:
     """Preview table order is by destination folder (case-insensitive) then episode number."""
-    root = "C:\\anime"
     items = [
-        RenameItem("/any/222222.mkv", f"{root}\\Dan Da Dan [Subs]\\Dan Da Dan 01 - First [Subs].mkv"),
-        RenameItem("/any/11.mkv", f"{root}\\Blue Lock [SEV]\\Blue Lock 02 - Monster [SEV].mkv"),
-        RenameItem("/any/other.mkv", f"{root}\\Blue Lock [SEV]\\Blue Lock 01 - Dream [SEV].mkv"),
-        RenameItem("/any/x.mkv", f"{root}\\Nana [EMBER]\\Nana 01 - Prologue [EMBER].mkv"),
+        RenameItem("/any/222222.mkv", "/anime/Dan Da Dan [Subs]/Dan Da Dan 01 - First [Subs].mkv"),
+        RenameItem("/any/11.mkv", "/anime/Blue Lock [SEV]/Blue Lock 02 - Monster [SEV].mkv"),
+        RenameItem("/any/other.mkv", "/anime/Blue Lock [SEV]/Blue Lock 01 - Dream [SEV].mkv"),
+        RenameItem("/any/x.mkv", "/anime/Nana [EMBER]/Nana 01 - Prologue [EMBER].mkv"),
     ]
     ordered = sorted(items, key=_plan_sort_key)
     new_paths = [item.new_path for item in ordered]
@@ -58,6 +56,7 @@ def test_apply_plan_moves_file(tmp_path: Path) -> None:
     src.write_bytes(b"data")
     db = tmp_path / "cache.sqlite"
     from anipyrenamer.cache import init_db
+
     init_db(str(db))
     items = [RenameItem(str(src), str(tmp_path / "new.mkv"))]
     apply_plan(items, str(db), dry_run=False)
@@ -95,6 +94,7 @@ def test_apply_plan_ignores_skip_kind(tmp_path: Path) -> None:
     src.write_bytes(b"data")
     db = tmp_path / "cache.sqlite"
     from anipyrenamer.cache import init_db
+
     init_db(str(db))
     items = [
         RenameItem(str(src), "(AniDB lookup failed)", kind=RenameKind.SKIP),
@@ -118,3 +118,57 @@ def test_apply_plan_skips_when_destination_exists(tmp_path: Path) -> None:
     apply_plan(items, str(db), dry_run=False)
     assert src.exists()
     assert existing.read_bytes() == b"existing"
+
+
+def test_apply_plan_chdir_parent_when_cwd_matches_source_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When cwd is the emptied source dir, apply moves cwd to parent before removal."""
+    from anipyrenamer.cache import init_db
+
+    old_dir = tmp_path / "OldDir"
+    old_dir.mkdir()
+    src = old_dir / "video.mkv"
+    src.write_bytes(b"data")
+    new_dir = tmp_path / "NewDir"
+    db = tmp_path / "cache.sqlite"
+    init_db(str(db))
+    monkeypatch.chdir(old_dir)
+
+    items = [RenameItem(str(src), str(new_dir / "video.mkv"), kind=RenameKind.FILE)]
+    apply_plan(items, str(db), dry_run=False)
+
+    assert not old_dir.exists()
+    assert Path.cwd() == tmp_path
+    assert (new_dir / "video.mkv").exists()
+
+
+def test_apply_plan_cleanup_permission_error_is_non_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Locked/permission errors during source-dir cleanup are logged and do not abort apply."""
+    from anipyrenamer.cache import init_db
+
+    old_dir = tmp_path / "OldDir"
+    old_dir.mkdir()
+    src = old_dir / "video.mkv"
+    src.write_bytes(b"data")
+    new_dir = tmp_path / "NewDir"
+    db = tmp_path / "cache.sqlite"
+    init_db(str(db))
+
+    original_rmdir = Path.rmdir
+
+    def _patched_rmdir(path: Path) -> None:
+        if path.resolve() == old_dir.resolve():
+            raise PermissionError("[WinError 32] simulated lock")
+        original_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", _patched_rmdir)
+
+    items = [RenameItem(str(src), str(new_dir / "video.mkv"), kind=RenameKind.FILE)]
+    apply_plan(items, str(db), dry_run=False)
+
+    assert old_dir.exists()
+    assert (new_dir / "video.mkv").exists()
+    assert any("Skipping source directory cleanup" in rec.message for rec in caplog.records)

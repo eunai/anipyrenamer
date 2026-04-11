@@ -1,10 +1,9 @@
 """Tests for SQLite cache."""
+
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
-import pytest
 
 from anipyrenamer.cache import (
     clear_file_anidb_cache,
@@ -19,11 +18,34 @@ from anipyrenamer.models import FileInfo
 
 def test_get_db_path_default() -> None:
     p = get_db_path(None)
-    assert "anipyrenamer_cache" in p and p.endswith(".sqlite")
+    assert p.endswith("anipyrenamer_cache.sqlite")
+    assert ".cache" in p
+    assert Path(p).is_absolute()
+
+
+def test_get_db_path_default_under_project_root_when_cwd_is_repo() -> None:
+    """When cwd is the project root (e.g. running pytest from repo), default path is repo/.cache/."""
+    from anipyrenamer.cache import _find_project_root
+
+    root = _find_project_root()
+    if root is None:
+        return
+    p = get_db_path(None)
+    assert Path(p).resolve().parent == (root / ".cache").resolve()
+    assert Path(p).name == "anipyrenamer_cache.sqlite"
 
 
 def test_get_db_path_custom() -> None:
     assert get_db_path("/tmp/custom.db") == "/tmp/custom.db"
+
+
+def test_init_db_creates_parent_directory(tmp_path: Path) -> None:
+    """init_db creates parent dir so .cache/ is created when using default path."""
+    db = tmp_path / "subdir" / "cache.sqlite"
+    assert not db.parent.exists()
+    init_db(str(db))
+    assert db.parent.exists()
+    assert db.exists()
 
 
 def test_init_db_and_file_info(tmp_path: Path) -> None:

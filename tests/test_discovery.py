@@ -1,10 +1,9 @@
 """Tests for discovery (video + sidecars)."""
+
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
-import pytest
 
 from anipyrenamer.discovery import discover
 

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 from pathlib import Path
 
 from anipyrenamer.models import FileInfo
+
+CACHE_FILENAME = "anipyrenamer_cache.sqlite"
 
 CACHE_STALE_DAYS = 30
 CACHE_STALE_SECONDS = CACHE_STALE_DAYS * 24 * 60 * 60
@@ -41,15 +44,50 @@ FILE_ANIDB_EXTRA_COLUMNS = [
 ]
 
 
+def _get_well_known_cache_dir() -> Path | None:
+    """Base dir for cache when not in a project (Windows: %APPDATA%/anipyrenamer, Unix: ~/.config/anipyrenamer)."""
+    if os.name == "nt":
+        apd = os.environ.get("APPDATA")
+        if not apd:
+            return None
+        return Path(apd) / "anipyrenamer"
+    return Path.home() / ".config" / "anipyrenamer"
+
+
+def _find_project_root() -> Path | None:
+    """Walk up from cwd; return directory containing pyproject.toml if found."""
+    candidate = Path.cwd().resolve()
+    for _ in range(32):
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+        parent = candidate.parent
+        if parent == candidate:
+            break
+        candidate = parent
+    return None
+
+
+def _get_default_db_path() -> str:
+    """Default cache path: project .cache/ when in repo, else well-known config .cache/ (never cwd)."""
+    project_root = _find_project_root()
+    if project_root is not None:
+        return str(project_root / ".cache" / CACHE_FILENAME)
+    well_known = _get_well_known_cache_dir()
+    if well_known is not None:
+        return str(well_known / ".cache" / CACHE_FILENAME)
+    return str(Path.home() / ".cache" / "anipyrenamer" / CACHE_FILENAME)
+
+
 def get_db_path(db_path: str | None) -> str:
-    """Default DB in user cache or current dir; else use provided path."""
+    """Default DB in project or well-known .cache/; else use provided path."""
     if db_path:
         return db_path
-    return str(Path.cwd() / "anipyrenamer_cache.sqlite")
+    return _get_default_db_path()
 
 
 def init_db(db_path: str) -> None:
     """Create tables if they do not exist; add any missing columns to file_anidb."""
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """

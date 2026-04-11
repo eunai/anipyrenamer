@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from anipyrenamer.models import RenameItem, RenameKind
 from anipyrenamer.validation import (
+    analyze_destination_conflicts,
     detect_destination_conflicts,
     flatten_and_validate_folder_renames,
 )
@@ -49,11 +49,15 @@ def test_flatten_includes_skip_items() -> None:
 def test_flatten_and_validate_folder_renames_multiple_targets_conflict() -> None:
     """Flatten returns only file items; directory items ignored; no conflict message."""
     items1 = [
-        RenameItem("/root/Anime/ep01.mkv", "/root/ShowA [GroupA]/ShowA - 01.mkv", kind=RenameKind.FILE),
+        RenameItem(
+            "/root/Anime/ep01.mkv", "/root/ShowA [GroupA]/ShowA - 01.mkv", kind=RenameKind.FILE
+        ),
         RenameItem("/root/Anime", "/root/ShowA [GroupA]", kind=RenameKind.DIRECTORY),
     ]
     items2 = [
-        RenameItem("/root/Anime/ep02.mkv", "/root/ShowB [GroupB]/ShowB - 02.mkv", kind=RenameKind.FILE),
+        RenameItem(
+            "/root/Anime/ep02.mkv", "/root/ShowB [GroupB]/ShowB - 02.mkv", kind=RenameKind.FILE
+        ),
         RenameItem("/root/Anime", "/root/ShowB [GroupB]", kind=RenameKind.DIRECTORY),
     ]
     flat, conflicts = flatten_and_validate_folder_renames([(items1, ""), (items2, "")])
@@ -83,3 +87,26 @@ def test_detect_destination_conflicts_existing_dest(tmp_path: Path) -> None:
     assert len(conflicts) == 1
     assert "already exists" in conflicts[0]
     assert "will skip" in conflicts[0]
+
+
+def test_detect_destination_conflicts_planned_same_target() -> None:
+    """Two planned outputs with same destination are reported as a collision."""
+    items = [
+        RenameItem("/a/one.mkv", "/dest/show-01.mkv", kind=RenameKind.FILE),
+        RenameItem("/a/two.mkv", "/dest/show-01.mkv", kind=RenameKind.FILE),
+    ]
+    conflicts = detect_destination_conflicts(items)
+    assert len(conflicts) == 1
+    assert "Planned destination collision" in conflicts[0]
+
+
+def test_analyze_destination_conflicts_case_only_collision() -> None:
+    """Case-only planned collision is detected on case-insensitive filesystems."""
+    items = [
+        RenameItem("/a/one.mkv", "/dest/Show-01.mkv", kind=RenameKind.FILE),
+        RenameItem("/a/two.mkv", "/dest/show-01.mkv", kind=RenameKind.FILE),
+    ]
+    conflicts, indexes = analyze_destination_conflicts(items, case_insensitive=True)
+    assert len(conflicts) == 1
+    assert "Planned destination collision" in conflicts[0]
+    assert indexes == {0, 1}

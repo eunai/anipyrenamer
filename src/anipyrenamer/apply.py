@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -16,6 +18,7 @@ from anipyrenamer.models import RenameItem, RenameKind
 
 # First 1-4 digit number in filename (episode heuristic); used for display sort only.
 _EPISODE_RE = re.compile(r"\d{1,4}")
+_LOG = logging.getLogger(__name__)
 
 
 def _plan_sort_key(item: RenameItem) -> tuple[str, int, str]:
@@ -95,7 +98,7 @@ def apply_plan(
         dst = Path(item.new_path)
         skipped = True
         if src.exists():
-            if not (dst.exists() and not _same_path(src, dst)):
+            if not dst.exists() or _same_path(src, dst):
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(src), str(dst))
                 applied_source_parents.add(src.parent)
@@ -107,8 +110,43 @@ def apply_plan(
             skipped_count += 1
         if progress_callback:
             progress_callback(idx, total, item, skipped)  # done
-    # Remove empty source dirs (deepest first)
-    for dir_path in sorted(applied_source_parents, key=lambda p: len(p.parts), reverse=True):
-        if dir_path.exists() and dir_path.is_dir() and not any(dir_path.iterdir()):
-            dir_path.rmdir()
+    _remove_empty_source_dirs(applied_source_parents)
     return (applied_count, skipped_count)
+
+
+def _remove_empty_source_dirs(applied_source_parents: set[Path]) -> None:
+    """
+    Best-effort cleanup for empty source directories (deepest first).
+
+    If the process is currently inside a source directory, move to the parent
+    before attempting rmdir. Cleanup failures are non-fatal.
+    """
+    cwd = Path.cwd().resolve()
+    for dir_path in sorted(applied_source_parents, key=lambda p: len(p.parts), reverse=True):
+        if not dir_path.exists() or not dir_path.is_dir():
+            continue
+        try:
+            if any(dir_path.iterdir()):
+                continue
+        except OSError as exc:
+            _LOG.warning("Skipping source directory cleanup for %s: %s", dir_path, exc)
+            continue
+
+        try:
+            resolved_dir = dir_path.resolve()
+        except OSError:
+            resolved_dir = dir_path
+        if resolved_dir == cwd:
+            try:
+                os.chdir(str(dir_path.parent))
+                cwd = Path.cwd().resolve()
+            except OSError as exc:
+                _LOG.warning(
+                    "Could not leave source directory %s before cleanup: %s", dir_path, exc
+                )
+                continue
+
+        try:
+            dir_path.rmdir()
+        except OSError as exc:
+            _LOG.warning("Skipping source directory cleanup for %s: %s", dir_path, exc)

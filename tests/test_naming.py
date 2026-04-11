@@ -1,7 +1,7 @@
 """Tests for naming template and sanitization."""
+
 from __future__ import annotations
 
-import pytest
 
 from anipyrenamer.naming import (
     DEFAULT_FILE_TEMPLATE,
@@ -119,3 +119,13 @@ def test_sanitize_reserved_dos_name_with_extension_preserves_dot() -> None:
     """When title is a reserved DOS name plus extension (e.g. CON.mkv), output is CON_.mkv not CON_mkv."""
     out = render_template("%title%", title="CON.mkv")
     assert out == "CON_.mkv"
+
+
+def test_sanitize_trailing_dot_after_illegal_char() -> None:
+    """Trailing dot exposed by illegal char replacement is removed (Windows safety)."""
+    from anipyrenamer.naming import _sanitize
+
+    assert not _sanitize("title.|").endswith(".")
+    assert not _sanitize("foo...:").endswith(".")
+    assert not _sanitize("bar. ").endswith(".")
+    assert _sanitize("normal.ext") == "normal.ext"
