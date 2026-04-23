@@ -4,9 +4,100 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 
 from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameKind
-from anipyrenamer.plan import build_plan
+from anipyrenamer.plan import _validate_path_containment, build_plan
+
+
+def test_validate_path_containment_rejects_outside_root(tmp_path: Path) -> None:
+    root = tmp_path / "expected"
+    root.mkdir()
+    outside = tmp_path / "other" / "f.mkv"
+    outside.parent.mkdir()
+    outside.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="escapes destination root"):
+        _validate_path_containment(str(outside), root)
+
+
+def test_validate_path_containment_rejects_dotdot(tmp_path: Path) -> None:
+    """SEC-05 / P3-A: bare '..' segment escapes the root."""
+    root = tmp_path / "anime"
+    root.mkdir()
+    with pytest.raises(ValueError, match="escapes destination root"):
+        _validate_path_containment(str(root / ".." / "foo"), root)
+
+
+def test_validate_path_containment_accepts_inside_root(tmp_path: Path) -> None:
+    root = tmp_path / "expected"
+    root.mkdir()
+    inner = root / "sub" / "a.mkv"
+    inner.parent.mkdir(parents=True)
+    inner.write_text("x", encoding="utf-8")
+    _validate_path_containment(str(inner), root)
+
+
+def test_build_plan_rejects_template_that_escapes_dest_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC-05: resolved output must stay under dest_root when set."""
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    sub = tmp_path / "src" / "sub"
+    sub.mkdir(parents=True)
+    video = sub / "v.mkv"
+    video.write_text("x", encoding="utf-8")
+    group = DiscoveredGroup(video_path=str(video), sidecar_paths=())
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=100,
+        ed2k="e" * 32,
+        quality="high",
+        source="TV",
+        anime_title="T",
+        episode_number="1",
+    )
+    monkeypatch.setattr("anipyrenamer.plan.render_template", lambda *_a, **_k: "..")
+    with pytest.raises(ValueError, match="escapes destination root"):
+        build_plan(group, info, "%title%%ext%", dest_root=str(dest))
+
+
+def test_build_plan_folder_template_stays_under_grandparent(tmp_path: Path) -> None:
+    """SEC-05: in-place --folder mode — expected root is video_path.parent.parent."""
+    root = tmp_path / "root"
+    show_dir = root / "MyDir"
+    show_dir.mkdir(parents=True)
+    video = show_dir / "ep01.mkv"
+    video.write_text("x", encoding="utf-8")
+    group = DiscoveredGroup(video_path=str(video), sidecar_paths=())
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=100,
+        ed2k="x" * 32,
+        quality="high",
+        source="TV",
+        anime_title="My Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Subs",
+    )
+    items = build_plan(
+        group,
+        info,
+        "%title% - %epno%%ext%",
+        dest_root=None,
+        folder_template="%title% [%group%]%ext%",
+    )
+    new_path = Path(items[0].new_path)
+    assert new_path.is_relative_to(root)
+    assert "Subs" in new_path.parent.name
 
 
 def test_build_plan_in_place() -> None:

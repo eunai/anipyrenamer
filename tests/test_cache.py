@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+import pytest
 
 from anipyrenamer.cache import (
     clear_file_anidb_cache,
@@ -37,6 +39,46 @@ def test_get_db_path_default_under_project_root_when_cwd_is_repo() -> None:
 
 def test_get_db_path_custom() -> None:
     assert get_db_path("/tmp/custom.db") == "/tmp/custom.db"
+
+
+def test_init_db_rejects_invalid_alter_column_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-08: dynamic ALTER TABLE column names must match ^[a-z_]+$."""
+    db = str(tmp_path / "legacy.sqlite")
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE file_anidb (
+                ed2k TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                PRIMARY KEY (ed2k, size)
+            )
+            """
+        )
+        conn.commit()
+    monkeypatch.setattr(
+        "anipyrenamer.cache.FILE_ANIDB_EXTRA_COLUMNS",
+        ['"; DROP TABLE file_anidb; --'],
+    )
+    with pytest.raises(ValueError, match="Invalid column name"):
+        init_db(db)
+
+
+def test_init_db_accepts_valid_extra_column_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-08 / P3-D: a well-formed extra column name passes the ^[a-z_]+$ guard."""
+    db = str(tmp_path / "valid_col.sqlite")
+    monkeypatch.setattr(
+        "anipyrenamer.cache.FILE_ANIDB_EXTRA_COLUMNS",
+        ["test_col"],
+    )
+    init_db(db)
+    with sqlite3.connect(db) as conn:
+        cur = conn.execute("PRAGMA table_info(file_anidb)")
+        cols = {row[1] for row in cur.fetchall()}
+    assert "test_col" in cols
 
 
 def test_init_db_creates_parent_directory(tmp_path: Path) -> None:

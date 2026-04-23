@@ -9,7 +9,8 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import Any
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 from rich.console import Console, Group
@@ -21,6 +22,7 @@ from rich.progress import (
     DownloadColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
@@ -38,7 +40,7 @@ from anipyrenamer.cache import (
 )
 from anipyrenamer.discovery import discover, get_file_size
 from anipyrenamer.ed2k import compute_ed2k
-from anipyrenamer.models import FileInfo, RenameItem, RenameKind
+from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKind
 from anipyrenamer.mylist import run_mylist_wizard
 from anipyrenamer.naming import DEFAULT_FILE_TEMPLATE, DEFAULT_FOLDER_TEMPLATE
 from anipyrenamer.plan import build_plan
@@ -66,12 +68,12 @@ def _load_env() -> None:
         load_dotenv(well_known)
 
 
-_load_env()
-
 # Exit code when user interrupts (e.g. Ctrl+C)
 EXIT_INTERRUPTED = 130
 # Exit code when completed with partial failures/skips/conflicts (spec §6)
 EXIT_PARTIAL = 2
+
+MAX_HASH_WORKERS = 4
 
 PLEX_SUFFIX = " [anidb-%aid%]"
 
@@ -81,6 +83,16 @@ def _apply_plex_suffix(template: str) -> str:
     if "%ext%" in template:
         return template.replace("%ext%", f"{PLEX_SUFFIX}%ext%", 1)
     return template + PLEX_SUFFIX
+
+
+def _hash_group(
+    group: DiscoveredGroup,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> tuple[DiscoveredGroup, int, str]:
+    """Hash a single group's video file. No shared mutable state — thread-safe."""
+    size = get_file_size(group.video_path)
+    ed2k = compute_ed2k(group.video_path, progress_callback=progress_callback)
+    return (group, size, ed2k)
 
 
 def _disconnect_anidb(client: Any, console: Console, had_session: bool) -> None:
@@ -150,6 +162,9 @@ def _deduped_path(dst: Path, *, strategy: str, old_path: str, attempt: int) -> P
 
 
 def _apply_suffix_conflict_resolution(items: list[RenameItem], *, strategy: str) -> None:
+    # Path containment was already validated in build_plan(); _deduped_path uses
+    # Path.with_name() which only changes the final component, preserving the
+    # parent directory and therefore the containment guarantee (SEC-05 / P2-A).
     case_insensitive = os.name == "nt"
     reserved: set[str] = set()
     for item in items:
@@ -184,6 +199,7 @@ def _apply_suffix_conflict_resolution(items: list[RenameItem], *, strategy: str)
 
 def main() -> None:
     """Run full pipeline: discover, hash, lookup, plan, preview, apply."""
+    _load_env()
     parser = argparse.ArgumentParser(
         prog="anipyrenamer",
         description="Rename anime files using ED2K hash and AniDB.",
@@ -322,12 +338,26 @@ def main() -> None:
             console=console,
         ) as progress:
             task = progress.add_task("Clearing cache for scanned files…", total=len(groups))
-            for group in groups:
-                size = get_file_size(group.video_path)
-                ed2k = compute_ed2k(group.video_path)
-                entries.append((size, ed2k))
-                precomputed_hashes[group.video_path] = (size, ed2k)
-                progress.advance(task)
+            if len(groups) <= 1:
+                for group in groups:
+                    _, size, ed2k = _hash_group(group)
+                    entries.append((size, ed2k))
+                    precomputed_hashes[group.video_path] = (size, ed2k)
+                    progress.advance(task)
+            else:
+                n_workers = min(MAX_HASH_WORKERS, len(groups))
+                executor = ThreadPoolExecutor(max_workers=n_workers)
+                cc_futures = {executor.submit(_hash_group, g): g for g in groups}
+                try:
+                    for fut in as_completed(cc_futures):
+                        grp, size, ed2k = fut.result()
+                        entries.append((size, ed2k))
+                        precomputed_hashes[grp.video_path] = (size, ed2k)
+                        progress.advance(task)
+                    executor.shutdown(wait=True)
+                except KeyboardInterrupt:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
         n = clear_file_anidb_entries(db_path, entries)
         console.print(f"[dim]Cleared AniDB cache for {n} file(s) in this scan.[/dim]")
 
@@ -413,7 +443,7 @@ def _do_hashing_lookup_plan_apply(
     console.print("[bold]Hashing and lookup[/bold]")
     all_items: list[tuple[list[RenameItem], str]] = []  # (items, batch_id placeholder)
     resolved_infos: list[FileInfo] = []
-    # Overall: bar only (no ETA at top). Per-file: single live line (path + bar + MB + speed + ETA).
+    # Overall: bar only (no ETA at top). Per-file: concurrent rows below overall bar.
     progress_overall = Progress(
         SpinnerColumn(),
         BarColumn(bar_width=24, style="blue", complete_style="green"),
@@ -434,35 +464,76 @@ def _do_hashing_lookup_plan_apply(
         f"Hashing and lookup 0/{len(groups)}",
         total=len(groups),
     )
-    file_task = progress_file.add_task("", total=1, visible=False)
     group_render = Group(progress_overall, progress_file)
+
+    groups_to_hash = [g for g in groups if g.video_path not in precomputed_hashes]
+    hash_results: dict[str, tuple[int, str]] = {}
 
     max_consecutive_timeouts = 3
     consecutive_timeouts = 0
     anidb_aborted = False
 
     with Live(group_render, console=console, refresh_per_second=8) as live:
+        # --- Phase 1: Hash files (parallel when >1, direct otherwise) ---
+        if len(groups_to_hash) == 1:
+            g = groups_to_hash[0]
+            size = get_file_size(g.video_path)
+            file_task = progress_file.add_task(
+                f"[yellow]{rich_escape(str(g.video_path))}[/yellow]",
+                total=max(1, size),
+                completed=0,
+            )
+
+            def _on_progress(br: int, tot: int) -> None:
+                progress_file.update(file_task, completed=br, total=max(1, tot))
+                live.refresh()
+
+            ed2k = compute_ed2k(g.video_path, progress_callback=_on_progress)
+            hash_results[g.video_path] = (size, ed2k)
+            progress_file.remove_task(file_task)
+        elif len(groups_to_hash) > 1:
+            n_workers = min(MAX_HASH_WORKERS, len(groups_to_hash))
+            executor = ThreadPoolExecutor(max_workers=n_workers)
+            future_tasks: dict[Future[tuple[DiscoveredGroup, int, str]], list[TaskID | None]] = {}
+
+            def _make_hash_cb(
+                tid_holder: list[TaskID | None], desc: str
+            ) -> Callable[[int, int], None]:
+                def _cb(br: int, tot: int) -> None:
+                    if tid_holder[0] is None:
+                        tid_holder[0] = progress_file.add_task(
+                            desc, total=max(1, tot), completed=br
+                        )
+                    else:
+                        progress_file.update(tid_holder[0], completed=br, total=max(1, tot))
+
+                return _cb
+
+            try:
+                for g in groups_to_hash:
+                    holder: list[TaskID | None] = [None]
+                    desc = f"[yellow]{rich_escape(str(g.video_path))}[/yellow]"
+                    fut = executor.submit(_hash_group, g, _make_hash_cb(holder, desc))
+                    future_tasks[fut] = holder
+                for future in as_completed(future_tasks):
+                    grp, file_size, file_ed2k = future.result()
+                    hash_results[grp.video_path] = (file_size, file_ed2k)
+                    tid_holder = future_tasks[future]
+                    if tid_holder[0] is not None:
+                        progress_file.remove_task(tid_holder[0])
+                executor.shutdown(wait=True)
+            except KeyboardInterrupt:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
+
+        # --- Phase 2: Sequential lookup per group ---
         for i, group in enumerate(groups):
             path_str = str(group.video_path)
             cached_hash = precomputed_hashes.get(group.video_path)
             if cached_hash is not None:
                 size, ed2k = cached_hash
-                progress_file.update(file_task, visible=False)
             else:
-                size = get_file_size(group.video_path)
-                progress_file.update(
-                    file_task,
-                    description=f"[yellow]{rich_escape(path_str)}[/yellow]",
-                    total=max(1, size),
-                    completed=0,
-                    visible=True,
-                )
-
-                def _on_progress(br: int, tot: int) -> None:
-                    progress_file.update(file_task, completed=br, total=max(1, tot))
-                    live.refresh()
-
-                ed2k = compute_ed2k(group.video_path, progress_callback=_on_progress)
+                size, ed2k = hash_results[group.video_path]
             info = get_file_info(db_path, size, ed2k)
             if args.refresh_cache and client is not None:
                 info = None
@@ -509,7 +580,6 @@ def _do_hashing_lookup_plan_apply(
                         f"[green]🌐 Fetched from AniDB for {rich_escape(path_str)}[/green]"
                     )
             if info is None:
-                # Show in plan table so user sees the file and why it wasn't renamed
                 skip_item = RenameItem(
                     old_path=group.video_path,
                     new_path="(AniDB lookup failed)",

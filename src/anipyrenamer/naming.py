@@ -24,6 +24,11 @@ def _sanitize(s: str) -> str:
     out = re.sub(r"-+", "-", out).strip("-")
     out = re.sub(r"\s+", " ", out).strip()
     out = re.sub(r"[. \t]+$", "", out)  # trailing dots/spaces after all substitutions (Windows)
+    # Neutralise bare ".." which would be a path-traversal segment (SEC-05 / P2-B).
+    # The trailing-dot strip above already collapses ".." to "", but this explicit
+    # guard survives even if the trailing-dot rule is ever relaxed.
+    if out == "..":
+        out = ""
     out = out or "Unknown"
     # Reserved DOS name: whole string or stem (before last dot)
     lower = out.lower()

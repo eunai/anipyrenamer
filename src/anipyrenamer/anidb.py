@@ -21,6 +21,38 @@ PACKET_INTERVAL = 2.5
 MAX_RETRIES = 3
 RETRY_BASE_SECONDS = 0.5
 
+_UDP_RECV_BUFFER = 65535
+MAX_FIELD_LENGTH = 200
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _redact(msg: str) -> str:
+    """Mask sensitive values in UDP messages for debug output (pass=, session s=)."""
+    # Stop at `&` so `pass=secret&s=sess` redacts both fields (not one greedy \\S+ span).
+    return re.sub(r"(pass|s)=[^&\s]+", r"\1=***", msg)
+
+
+def _safe_int(raw: str, *, field_name: str = "field") -> int:
+    """Parse AniDB integer field; return 0 on empty/malformed without crashing."""
+    s = (raw or "").strip()
+    if not s:
+        return 0
+    try:
+        return int(s)
+    except ValueError:
+        print(f"[anidb] WARNING: invalid integer in AniDB response ({field_name})")
+        return 0
+
+
+def _sanitize_field(s: str) -> str:
+    """Strip control characters and truncate untrusted AniDB strings before path use."""
+    if not s:
+        return ""
+    out = _CONTROL_CHARS.sub("", s).strip()
+    if len(out) > MAX_FIELD_LENGTH:
+        out = out[:MAX_FIELD_LENGTH]
+    return out
+
 
 @dataclass
 class MyListEntry:
@@ -130,14 +162,15 @@ class AniDBClient:
                 self._throttle()
                 sock = self._ensure_socket()
                 if self._debug:
-                    log_msg = re.sub(r"pass=\w+", "pass=***", msg)
-                    print(f"[anidb] >>> {log_msg}")
+                    print(f"[anidb] >>> {_redact(msg)}")
                 sock.sendto(msg.encode("utf-8"), (ANIDB_HOST, ANIDB_PORT))
-                data, _ = sock.recvfrom(4096)
+                data, _ = sock.recvfrom(_UDP_RECV_BUFFER)
+                if len(data) == _UDP_RECV_BUFFER:
+                    print("[anidb] WARNING: received data may be truncated")
                 reply = data.decode("utf-8", errors="replace").strip()
                 if self._debug:
                     preview = reply[:500] + "..." if len(reply) > 500 else reply
-                    print(f"[anidb] <<< {preview}")
+                    print(f"[anidb] <<< {_redact(preview)}")
                 return reply
             except (socket.timeout, OSError) as exc:
                 last_error = exc
@@ -174,7 +207,10 @@ class AniDBClient:
             sock.settimeout(timeout)
             self._throttle()
             sock.sendto(msg.encode("utf-8"), (ANIDB_HOST, ANIDB_PORT))
-            data, _ = sock.recvfrom(4096)
+            # NOTE: If adding debug output here, use _redact() (see SEC-04).
+            data, _ = sock.recvfrom(_UDP_RECV_BUFFER)
+            if len(data) == _UDP_RECV_BUFFER:
+                print("[anidb] WARNING: received data may be truncated")
             return data.decode("utf-8", errors="replace").strip()
         except Exception:
             return None
@@ -246,18 +282,18 @@ class AniDBClient:
         if len(fields) < 12:
             return None
         return MyListEntry(
-            lid=int(fields[0] or 0),
-            fid=int(fields[1] or 0),
-            eid=int(fields[2] or 0),
-            aid=int(fields[3] or 0),
-            gid=int(fields[4] or 0),
-            date=int(fields[5] or 0),
-            state=int(fields[6] or 0),
-            viewdate=int(fields[7] or 0),
-            storage=fields[8] or "",
-            source=fields[9] or "",
-            other=fields[10] or "",
-            filestate=int(fields[11] or 0),
+            lid=_safe_int(fields[0], field_name="lid"),
+            fid=_safe_int(fields[1], field_name="fid"),
+            eid=_safe_int(fields[2], field_name="eid"),
+            aid=_safe_int(fields[3], field_name="aid"),
+            gid=_safe_int(fields[4], field_name="gid"),
+            date=_safe_int(fields[5], field_name="date"),
+            state=_safe_int(fields[6], field_name="state"),
+            viewdate=_safe_int(fields[7], field_name="viewdate"),
+            storage=_sanitize_field(fields[8] or ""),
+            source=_sanitize_field(fields[9] or ""),
+            other=_sanitize_field(fields[10] or ""),
+            filestate=_safe_int(fields[11], field_name="filestate"),
         )
 
     def mylist_add_or_update_by_fid(
@@ -303,7 +339,7 @@ class AniDBClient:
                 if len(lines) < 2:
                     return (False, "Already in MyList, but could not parse entry id for update.")
                 lid_field = lines[1].split("|", 1)[0].strip()
-                lid = int(lid_field) if lid_field.isdigit() else 0
+                lid = _safe_int(lid_field, field_name="lid")
                 if lid <= 0:
                     return (False, "Already in MyList, but could not parse entry id for update.")
                 return self._edit_mylist_entry(
@@ -370,24 +406,24 @@ class AniDBClient:
         parts = reply.split("\n")[1].strip().split("|")
         # aid|eps|ep count|special cnt|rating|votes|...|year|type|romaji|kanji|english|other|short names|synonyms|category list
         if len(parts) >= 19:
-            info.ep_count = (parts[2] or "").strip()
-            info.ep_highest = (parts[1] or "").strip()
-            info.year_begin = (parts[10] or "").strip()
+            info.ep_count = _sanitize_field(parts[2] or "")
+            info.ep_highest = _sanitize_field(parts[1] or "")
+            info.year_begin = _sanitize_field(parts[10] or "")
             info.year_end = info.year_begin  # single year in default format
-            info.anime_type = (parts[11] or "").strip()
-            info.title_romaji = (parts[12] or "").strip()
-            info.title_kanji = (parts[13] or "").strip()
-            info.title_english = (parts[14] or "").strip()
-            info.title_other = (parts[15] or "").strip()
-            info.title_synonym = (parts[17] or "").strip()
-            info.categories = (parts[18] or "").strip()
+            info.anime_type = _sanitize_field(parts[11] or "")
+            info.title_romaji = _sanitize_field(parts[12] or "")
+            info.title_kanji = _sanitize_field(parts[13] or "")
+            info.title_english = _sanitize_field(parts[14] or "")
+            info.title_other = _sanitize_field(parts[15] or "")
+            info.title_synonym = _sanitize_field(parts[17] or "")
+            info.categories = _sanitize_field(parts[18] or "")
         if len(parts) >= 15:
-            info.title_romaji = info.title_romaji or (parts[12] or "").strip()
-            info.title_english = info.title_english or (parts[14] or "").strip()
+            info.title_romaji = info.title_romaji or _sanitize_field(parts[12] or "")
+            info.title_english = info.title_english or _sanitize_field(parts[14] or "")
         # Prefer ANIME titles over FILE line heuristic (which can misparse quality/codec as title)
         anime_from_anime = info.title_english or info.title_romaji or info.title_kanji or ""
         if anime_from_anime:
-            info.anime_title = anime_from_anime
+            info.anime_title = _sanitize_field(anime_from_anime)
         elif not info.anime_title:
             info.anime_title = ""
 
@@ -402,18 +438,18 @@ class AniDBClient:
         # eid|aid|length|rating|votes|epno|eng|romaji|kanji|aired|type
         if len(parts) >= 9:
             # Prefer EPISODE data over FILE heuristic (which can misparse codec/bitrate as epno/eptitle)
-            epno = (parts[5] or "").strip()
+            epno = _sanitize_field(parts[5] or "")
             if epno:
                 info.episode_number = epno
-            info.eptitle_english = (parts[6] or "").strip()
-            info.eptitle_romaji = (parts[7] or "").strip()
-            info.eptitle_kanji = (parts[8] or "").strip()
+            info.eptitle_english = _sanitize_field(parts[6] or "")
+            info.eptitle_romaji = _sanitize_field(parts[7] or "")
+            info.eptitle_kanji = _sanitize_field(parts[8] or "")
         if len(parts) >= 7:
-            eptitle = (parts[6] or "").strip()
+            eptitle = _sanitize_field(parts[6] or "")
             if eptitle:
                 info.episode_title = eptitle
         if not info.episode_title and info.eptitle_english:
-            info.episode_title = info.eptitle_english
+            info.episode_title = _sanitize_field(info.eptitle_english)
 
     def _group_names(self, gid: int) -> tuple[str, str]:
         """GROUP gid=; return (short_name, long_name). 250 GROUP: gid|...|name|short|..."""
@@ -427,8 +463,8 @@ class AniDBClient:
             return ("", "")
         parts = lines[1].strip().split("|")
         # name=parts[5], short=parts[6]
-        long_name = (parts[5] or "").strip() if len(parts) > 5 else ""
-        short_name = (parts[6] or "").strip() if len(parts) > 6 else ""
+        long_name = _sanitize_field((parts[5] or "").strip() if len(parts) > 5 else "")
+        short_name = _sanitize_field((parts[6] or "").strip() if len(parts) > 6 else "")
         return (short_name, long_name)
 
     def __enter__(self) -> AniDBClient:
@@ -442,10 +478,10 @@ def _parse_file_response(data_line: str, size: int, ed2k: str) -> FileInfo:
     """Parse one line of 220 FILE response. We know size and ed2k from request."""
     parts = [p.strip() for p in data_line.split("|")]
     # fid, aid, eid, gid are first four per spec
-    fid = int(parts[0]) if len(parts) > 0 else 0
-    aid = int(parts[1]) if len(parts) > 1 else 0
-    eid = int(parts[2]) if len(parts) > 2 else 0
-    gid = int(parts[3]) if len(parts) > 3 else 0
+    fid = _safe_int(parts[0], field_name="fid") if len(parts) > 0 else 0
+    aid = _safe_int(parts[1], field_name="aid") if len(parts) > 1 else 0
+    eid = _safe_int(parts[2], field_name="eid") if len(parts) > 2 else 0
+    gid = _safe_int(parts[3], field_name="gid") if len(parts) > 3 else 0
     quality = ""
     source = ""
     anime_title = ""
@@ -456,24 +492,28 @@ def _parse_file_response(data_line: str, size: int, ed2k: str) -> FileInfo:
     # Scan for common string fields (quality, source, names). Skip hash-like fields (MD5, SHA1, etc.).
     for i, p in enumerate(parts):
         if p in ("high", "medium", "low", "corrupt", "very high", "backup", "unknown"):
-            quality = p
+            quality = _sanitize_field(p)
         elif p in ("TV", "DTV", "DVD", "VHS", "HDTV", "LD", "WEB", "Blu-ray", "Blu-Ray"):
-            source = p
+            source = _sanitize_field(p)
         elif _looks_like_hash(p):
             continue  # do not use hash as title/group
         elif i >= 4 and len(p) > 2 and not p.isdigit() and "|" not in p:
             if not anime_title and p:
-                anime_title = p
+                anime_title = _sanitize_field(p)
             elif anime_title and not episode_number and re.match(r"^\d+", p):
-                episode_number = p
+                episode_number = _sanitize_field(p)
             elif episode_number and not episode_title and p and p != episode_number:
-                episode_title = p
+                episode_title = _sanitize_field(p)
             elif not group_name and p and p != episode_title:
-                group_name = p
+                group_name = _sanitize_field(p)
     # Prefer extracting by position if we have enough fields; otherwise use defaults
     if len(parts) > 10:
-        quality = quality or (parts[10] if parts[10] else "")
-        source = source or (parts[11] if len(parts) > 11 else "")
+        quality = quality or _sanitize_field(parts[10] if parts[10] else "")
+        source = source or _sanitize_field(parts[11] if len(parts) > 11 else "")
+    # Deliberate: _sanitize_field() is applied both during heuristic assignment
+    # above and again here.  The function is idempotent, so the second pass is a
+    # defence-in-depth layer ensuring no unsanitised AniDB string reaches
+    # FileInfo regardless of future parser changes (SEC-06 / P2-C).
     return FileInfo(
         fid=fid,
         aid=aid,
@@ -481,12 +521,12 @@ def _parse_file_response(data_line: str, size: int, ed2k: str) -> FileInfo:
         gid=gid,
         size=size,
         ed2k=ed2k,
-        quality=quality,
-        source=source,
-        group_name=group_name,
+        quality=_sanitize_field(quality),
+        source=_sanitize_field(source),
+        group_name=_sanitize_field(group_name),
         group_short_name="",
-        anime_title=anime_title,
-        episode_number=episode_number,
-        episode_title=episode_title,
-        file_version=file_version,
+        anime_title=_sanitize_field(anime_title),
+        episode_number=_sanitize_field(episode_number),
+        episode_title=_sanitize_field(episode_title),
+        file_version=_sanitize_field(file_version),
     )

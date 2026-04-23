@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -140,6 +141,8 @@ def init_db(db_path: str) -> None:
         existing = {row[1] for row in cur.fetchall()}
         for col in FILE_ANIDB_EXTRA_COLUMNS:
             if col not in existing:
+                if not re.fullmatch(r"[a-z_]+", col):
+                    raise ValueError(f"Invalid column name: {col}")
                 conn.execute(f"ALTER TABLE file_anidb ADD COLUMN {col} TEXT")
         conn.commit()
 

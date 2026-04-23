@@ -6,7 +6,61 @@ import socket
 
 import pytest
 
-from anipyrenamer.anidb import AniDBClient, AniDBConfig, _looks_like_hash, _parse_file_response
+from anipyrenamer.anidb import (
+    MAX_FIELD_LENGTH,
+    AniDBClient,
+    AniDBConfig,
+    _UDP_RECV_BUFFER,
+    _looks_like_hash,
+    _parse_file_response,
+    _redact,
+    _safe_int,
+    _sanitize_field,
+)
+
+
+def test_redact_masks_pass() -> None:
+    assert _redact("pass=secret") == "pass=***"
+    assert "secret" not in _redact("prefix pass=secret&suffix")
+
+
+def test_redact_masks_session_s() -> None:
+    assert _redact("s=ABCDEF123") == "s=***"
+    assert "ABCDEF123" not in _redact("FILE ... s=ABCDEF123")
+
+
+def test_redact_masks_pass_and_s_in_one_message() -> None:
+    out = _redact("AUTH pass=mysecret&s=SESSKEY99")
+    assert out == "AUTH pass=***&s=***"
+    assert "mysecret" not in out and "SESSKEY99" not in out
+
+
+def test_send_recv_debug_prints_redacted_inbound_and_outbound(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC-04: inbound preview must not leak session key in debug output."""
+
+    class FakeSock:
+        def sendto(self, payload: bytes, addr: tuple[str, int]) -> None:  # noqa: ARG002
+            return None
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:  # noqa: ARG002
+            return (
+                b"500 BANNED s=SHOULD_NOT_LEAK&reason=test",
+                ("api.anidb.net", 9000),
+            )
+
+    cfg = AniDBConfig("u", "p", "c", "1", 0)
+    client = AniDBClient(cfg, debug=True)
+    monkeypatch.setattr(client, "_ensure_socket", lambda: FakeSock())
+    monkeypatch.setattr(client, "_throttle", lambda: None)
+
+    client._send_recv("FILE s=OUTBOUND_SESSION&ed2k=x")
+    captured = capsys.readouterr().out
+    assert "OUTBOUND_SESSION" not in captured
+    assert "SHOULD_NOT_LEAK" not in captured
+    assert "s=***" in captured
 
 
 def test_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -21,6 +75,64 @@ def test_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.client == "testclient"
     assert cfg.clientver == "2"
     assert cfg.local_port == 9876
+
+
+def test_udp_recv_buffer_constant() -> None:
+    assert _UDP_RECV_BUFFER == 65535
+
+
+def test_send_recv_truncation_warning_when_full_buffer(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC-07: warn on full recv buffer even when debug is off (no payload echoed)."""
+
+    class FakeSock:
+        def sendto(self, payload: bytes, addr: tuple[str, int]) -> None:  # noqa: ARG002
+            return None
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:
+            assert size == _UDP_RECV_BUFFER
+            return (b"x" * _UDP_RECV_BUFFER, ("api.anidb.net", 9000))
+
+    cfg = AniDBConfig("u", "p", "c", "1", 0)
+    client = AniDBClient(cfg, debug=False)
+    monkeypatch.setattr(client, "_ensure_socket", lambda: FakeSock())
+    monkeypatch.setattr(client, "_throttle", lambda: None)
+
+    client._send_recv("PING")
+    out = capsys.readouterr().out
+    assert "WARNING: received data may be truncated" in out
+
+
+def test_safe_int_malformed_and_valid(capsys: pytest.CaptureFixture[str]) -> None:
+    assert _safe_int("abc") == 0
+    assert "invalid integer" in capsys.readouterr().out.lower()
+    assert _safe_int("123") == 123
+    assert _safe_int("") == 0
+    assert _safe_int("  ") == 0
+
+
+def test_sanitize_field_strips_controls_and_truncates() -> None:
+    assert _sanitize_field("a\x01b") == "ab"
+    long_s = "x" * (MAX_FIELD_LENGTH + 50)
+    assert len(_sanitize_field(long_s)) == MAX_FIELD_LENGTH
+
+
+def test_parse_file_response_malformed_int_fields_does_not_crash() -> None:
+    ed2k = "e" * 32
+    line = f"bad|bad|bad|bad|0||0|1|999|{ed2k}"
+    info = _parse_file_response(line, size=999, ed2k=ed2k)
+    assert info.fid == 0 and info.aid == 0 and info.eid == 0 and info.gid == 0
+
+
+def test_parse_file_response_sanitizes_heuristic_title() -> None:
+    """SEC-06: heuristic-assigned anime_title must not retain control characters."""
+    ed2k = "e" * 32
+    line = f"1|2|3|4|0||0|1|100|{ed2k}|high|DTV|Hello\x01World"
+    info = _parse_file_response(line, size=100, ed2k=ed2k)
+    assert "\x01" not in info.anime_title
+    assert "Hello" in info.anime_title and "World" in info.anime_title
 
 
 def test_parse_file_response_minimal() -> None:

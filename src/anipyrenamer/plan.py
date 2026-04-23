@@ -8,6 +8,16 @@ from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKin
 from anipyrenamer.naming import render_template
 
 
+def _validate_path_containment(new_path: str, expected_root: Path) -> None:
+    """Raise ValueError if resolved new_path is not under expected_root (CWE-22)."""
+    resolved_new = Path(new_path).resolve()
+    resolved_root = expected_root.resolve()
+    if not resolved_new.is_relative_to(resolved_root):
+        raise ValueError(
+            f"Planned output path escapes destination root: {resolved_new} is not under {resolved_root}"
+        )
+
+
 def _info_kwargs(info: FileInfo, extension: str = "") -> dict[str, str]:
     """Build kwargs for render_template from FileInfo."""
     return dict(
@@ -75,11 +85,16 @@ def build_plan(
     base_name = render_template(template, **kwargs)
     parent = video_path.parent
     if dest_root:
+        expected_root = Path(dest_root).resolve()
         parent = Path(dest_root)
     elif folder_template is not None:
+        expected_root = Path(group.video_path).parent.parent.resolve()
         folder_name = render_template(folder_template, **_info_kwargs(info, extension=""))
         parent = video_path.parent.parent / folder_name
+    else:
+        expected_root = Path(group.video_path).parent.resolve()
     new_video = parent / f"{base_name}"
+    _validate_path_containment(str(new_video), expected_root)
     items: list[RenameItem] = [
         RenameItem(
             old_path=group.video_path,
@@ -91,6 +106,7 @@ def build_plan(
     for old_side in group.sidecar_paths:
         p = Path(old_side)
         new_side = parent / f"{base_name.removesuffix(ext)}{p.suffix}"
+        _validate_path_containment(str(new_side), expected_root)
         items.append(
             RenameItem(
                 old_path=old_side,

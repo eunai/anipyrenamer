@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path, WindowsPath
 from unittest.mock import MagicMock, patch
@@ -13,12 +14,39 @@ from anipyrenamer.cli import (
     _apply_plex_suffix,
     _apply_suffix_conflict_resolution,
     _get_well_known_env_path,
+    _hash_group,
     _prompt_confirmation,
     main,
 )
 from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKind
 from anipyrenamer.naming import DEFAULT_FOLDER_TEMPLATE
 from anipyrenamer.validation import flatten_and_validate_folder_renames
+
+
+def test_cli_import_does_not_call_load_dotenv_until_main(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SEC-10: importing cli does not load .env; main() invokes _load_env()."""
+    calls: list[object] = []
+
+    def fake_load_dotenv(*args: object, **kwargs: object) -> bool:
+        calls.append((args, kwargs))
+        return True
+
+    import anipyrenamer.cli as cli_module
+
+    importlib.reload(cli_module)
+    monkeypatch.setattr(cli_module, "load_dotenv", fake_load_dotenv)
+    assert calls == []
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "--help"]
+        with pytest.raises(SystemExit) as exc_info:
+            cli_module.main()
+        assert exc_info.value.code == 0
+    finally:
+        sys.argv = orig_argv
+
+    assert len(calls) >= 1
 
 
 def test_cli_help_exits_zero() -> None:
@@ -326,3 +354,199 @@ def test_get_well_known_env_path_unix(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("anipyrenamer.cli.Path", WindowsPath)
     monkeypatch.setattr(WindowsPath, "home", lambda: WindowsPath("/home/user"))
     assert _get_well_known_env_path() == WindowsPath("/home/user/.config/anipyrenamer/.env")
+
+
+# --- PERF-01: Parallel hashing tests ---
+
+
+def test_hash_group_returns_correct_tuple(tmp_path: Path) -> None:
+    """_hash_group returns (group, size, ed2k) for a test file."""
+    video = tmp_path / "test.mkv"
+    content = b"hello world" * 100
+    video.write_bytes(content)
+    group = DiscoveredGroup(video_path=str(video), sidecar_paths=())
+    result_group, size, ed2k = _hash_group(group)
+    assert result_group is group
+    assert size == len(content)
+    assert isinstance(ed2k, str)
+    assert len(ed2k) == 32
+
+
+def test_hash_group_with_progress_callback(tmp_path: Path) -> None:
+    """_hash_group invokes progress_callback when provided."""
+    video = tmp_path / "test.mkv"
+    video.write_bytes(b"x" * 1000)
+    group = DiscoveredGroup(video_path=str(video), sidecar_paths=())
+    calls: list[tuple[int, int]] = []
+    _, size, _ = _hash_group(group, progress_callback=lambda br, tot: calls.append((br, tot)))
+    assert size == 1000
+    assert len(calls) > 0
+    assert calls[-1] == (1000, 1000)
+
+
+def test_parallel_hashing_multiple_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI with 3 files uses parallel hashing and processes all files."""
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    groups = [
+        DiscoveredGroup(video_path="/in/a.mkv", sidecar_paths=()),
+        DiscoveredGroup(video_path="/in/b.mkv", sidecar_paths=()),
+        DiscoveredGroup(video_path="/in/c.mkv", sidecar_paths=()),
+    ]
+    compute_calls: list[str] = []
+
+    def _mock_compute(path: str, *, progress_callback: object = None) -> str:
+        compute_calls.append(path)
+        return "A" * 32
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "/in", "--dry-run", "--offline"]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", side_effect=_mock_compute),
+            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                side_effect=[
+                    [RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
+                    [RenameItem("/in/b.mkv", "/dest/b.mkv", kind=RenameKind.FILE)],
+                    [RenameItem("/in/c.mkv", "/dest/c.mkv", kind=RenameKind.FILE)],
+                ],
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+        assert sorted(compute_calls) == ["/in/a.mkv", "/in/b.mkv", "/in/c.mkv"]
+    finally:
+        sys.argv = orig_argv
+
+
+def test_single_file_no_thread_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Single file is hashed directly without creating a thread pool."""
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path="/in/a.mkv", sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "/in", "--dry-run", "--offline"]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
+            ),
+            patch("anipyrenamer.cli.ThreadPoolExecutor") as mock_pool,
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+            mock_pool.assert_not_called()
+    finally:
+        sys.argv = orig_argv
+
+
+def test_clear_cache_uses_shared_hashing_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--clear-cache path uses the shared _hash_group helper."""
+    groups = [
+        DiscoveredGroup(video_path="/in/a.mkv", sidecar_paths=()),
+        DiscoveredGroup(video_path="/in/b.mkv", sidecar_paths=()),
+    ]
+    hash_group_calls: list[str] = []
+
+    def _mock_hash_group(
+        group: DiscoveredGroup, progress_callback: object = None
+    ) -> tuple[DiscoveredGroup, int, str]:
+        hash_group_calls.append(group.video_path)
+        return (group, 10, "A" * 32)
+
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "/in", "--clear-cache", "--dry-run", "--offline"]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli._hash_group", side_effect=_mock_hash_group),
+            patch("anipyrenamer.cli.clear_file_anidb_entries", return_value=2),
+            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                side_effect=[
+                    [RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
+                    [RenameItem("/in/b.mkv", "/dest/b.mkv", kind=RenameKind.FILE)],
+                ],
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+        assert sorted(hash_group_calls) == ["/in/a.mkv", "/in/b.mkv"]
+    finally:
+        sys.argv = orig_argv
+
+
+def test_keyboard_interrupt_during_parallel_hashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KeyboardInterrupt during parallel hashing calls logout and exits 130."""
+    (tmp_path / "a.mkv").write_bytes(b"x")
+    (tmp_path / "b.mkv").write_bytes(b"y")
+    monkeypatch.setenv("ANIDB_USERNAME", "u")
+    monkeypatch.setenv("ANIDB_PASSWORD", "p")
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", str(tmp_path)]
+        with patch("anipyrenamer.anidb.AniDBClient") as MockAniDBClient:
+            mock_client = MagicMock()
+            MockAniDBClient.return_value = mock_client
+            mock_client.login.return_value = (True, "")
+            mock_client._session = "fake"
+            with patch("anipyrenamer.cli.compute_ed2k", side_effect=KeyboardInterrupt):
+                with pytest.raises(SystemExit) as exc_info:
+                    main()
+                assert exc_info.value.code == EXIT_INTERRUPTED
+            mock_client.logout.assert_called()
+    finally:
+        sys.argv = orig_argv
