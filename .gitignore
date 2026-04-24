@@ -1,0 +1,34 @@
+# Merged public-consumer ignore: base matches root .gitignore; keep both in sync when
+# editing .gitignore (copy updates here or regenerate this file).
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.anipyrenamer_cache.sqlite
+.cache/
+external_docs/
+.publish-staging
+
+# Cursor local metadata — keep committed rules only
+.cursor/*
+!.cursor/rules/
+
+# Agent debug session NDJSON (optional local tooling)
+debug-*.log
+
+# Public-only additional exclusions: private AI tooling, internal docs,
+# and dev scratch must never appear here.
+.cursor/
+.claude/
+AGENTS.md
+docs/internal/

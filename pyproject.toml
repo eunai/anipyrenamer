@@ -5,7 +5,6 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "anipyrenamer"
 version = "1.0.7"
-# Security Plan 1: complete (see docs/plans/implemented/20260410_03 - Immediate Security/)
 description = "Rename anime files using ED2K hash and AniDB."
 readme = "README.md"
 requires-python = ">=3.13"
