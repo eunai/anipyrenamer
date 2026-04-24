@@ -12,7 +12,7 @@ It fits alongside local media libraries (Plex/Jellyfin folders, plain disk colle
 ## Install
 
 ```bash
-cd anipyrenamer
+# From the repository root (the directory that contains pyproject.toml).
 
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
