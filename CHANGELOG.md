@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Repository `LICENSE`: **MIT**.
+
 ### Fixed
 
 - Environment variables from `.env` load only when the CLI entry point runs, not when importing the CLI module. SQLite schema migrations validate dynamic column names before altering tables.
@@ -15,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Operator runbook ships at `docs/runbook.md` on the published repository.
 - ED2K hashing uses memory-mapped reads for large files (with automatic fallback) to reduce overhead on fast storage.
+- README and operator runbook describe sequential per-file hashing (hash, then cache/lookup, then the next file) and how large files use mmap with read fallback.
 
 ## [1.0.8] - 2026-04-30
 

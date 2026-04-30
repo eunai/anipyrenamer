@@ -76,4 +76,4 @@ Report bugs and request features via the project issue tracker on [GitHub](https
 
 ## License
 
-No license file is currently included in this repository.
+Distributed under the [MIT License](LICENSE). Dependency licenses vary; review them when preparing redistributions (wheel, bundle, installer).
