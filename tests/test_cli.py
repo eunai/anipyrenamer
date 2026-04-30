@@ -356,9 +356,6 @@ def test_get_well_known_env_path_unix(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _get_well_known_env_path() == WindowsPath("/home/user/.config/anipyrenamer/.env")
 
 
-# --- PERF-01: Parallel hashing tests ---
-
-
 def test_hash_group_returns_correct_tuple(tmp_path: Path) -> None:
     """_hash_group returns (group, size, ed2k) for a test file."""
     video = tmp_path / "test.mkv"
@@ -384,8 +381,8 @@ def test_hash_group_with_progress_callback(tmp_path: Path) -> None:
     assert calls[-1] == (1000, 1000)
 
 
-def test_parallel_hashing_multiple_files(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CLI with 3 files uses parallel hashing and processes all files."""
+def test_sequential_hashing_multiple_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI hashes multiple files one at a time on the main thread (discovery order)."""
     info = FileInfo(
         fid=1,
         aid=2,
@@ -431,13 +428,13 @@ def test_parallel_hashing_multiple_files(monkeypatch: pytest.MonkeyPatch) -> Non
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 0
-        assert sorted(compute_calls) == ["/in/a.mkv", "/in/b.mkv", "/in/c.mkv"]
+        assert compute_calls == ["/in/a.mkv", "/in/b.mkv", "/in/c.mkv"]
     finally:
         sys.argv = orig_argv
 
 
-def test_single_file_no_thread_pool(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Single file is hashed directly without creating a thread pool."""
+def test_single_file_main_thread_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Single-file run completes hashing on the main thread (no thread pool)."""
     info = FileInfo(
         fid=1,
         aid=2,
@@ -465,12 +462,10 @@ def test_single_file_no_thread_pool(monkeypatch: pytest.MonkeyPatch) -> None:
                 "anipyrenamer.cli.build_plan",
                 return_value=[RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
             ),
-            patch("anipyrenamer.cli.ThreadPoolExecutor") as mock_pool,
         ):
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 0
-            mock_pool.assert_not_called()
     finally:
         sys.argv = orig_argv
 
@@ -522,15 +517,15 @@ def test_clear_cache_uses_shared_hashing_helper(monkeypatch: pytest.MonkeyPatch)
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 0
-        assert sorted(hash_group_calls) == ["/in/a.mkv", "/in/b.mkv"]
+        assert hash_group_calls == ["/in/a.mkv", "/in/b.mkv"]
     finally:
         sys.argv = orig_argv
 
 
-def test_keyboard_interrupt_during_parallel_hashing(
+def test_keyboard_interrupt_during_hashing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """KeyboardInterrupt during parallel hashing calls logout and exits 130."""
+    """KeyboardInterrupt during hashing calls logout and exits 130."""
     (tmp_path / "a.mkv").write_bytes(b"x")
     (tmp_path / "b.mkv").write_bytes(b"y")
     monkeypatch.setenv("ANIDB_USERNAME", "u")

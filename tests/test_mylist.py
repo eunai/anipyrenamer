@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from rich.console import Console
 
 from anipyrenamer.models import FileInfo
@@ -68,6 +69,31 @@ def test_mylist_wizard_applies_with_storage_and_watched(monkeypatch) -> None:
     assert client.calls == [
         (100, True, 1, "Internal HDD", True),
         (101, True, 1, "Internal HDD", True),
+    ]
+
+
+def test_mylist_wizard_item_progress_fires_per_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: MyList applies one API call per fid; progress hook matches that granularity."""
+    events: list[tuple[int, int, str]] = []
+
+    def _progress(current: int, total: int, phase: str) -> None:
+        events.append((current, total, phase))
+
+    client = _FakeMyListClient()
+    monkeypatch.setattr("builtins.input", lambda _prompt: "1")
+
+    run_mylist_wizard(
+        console=Console(record=True, no_color=True),
+        client=client,
+        file_infos=[_file_info(1), _file_info(2)],
+        confirm=lambda _message: "a",
+        item_progress=_progress,
+    )
+    assert events == [
+        (1, 2, "start"),
+        (1, 2, "end"),
+        (2, 2, "start"),
+        (2, 2, "end"),
     ]
 
 

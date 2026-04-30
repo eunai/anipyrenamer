@@ -14,8 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Operator runbook ships at `docs/runbook.md` on the published repository.
-- Multiple video files are hashed concurrently (up to four worker threads) when more than one file is processed; a single-file run uses one thread. The `--clear-cache` prehash path uses the same parallel helper. Progress can show several per-file rows during hashing.
 - ED2K hashing uses memory-mapped reads for large files (with automatic fallback) to reduce overhead on fast storage.
+
+## [1.0.8] - 2026-04-30
+
+### Changed
+
+- **Hashing:** ED2K runs **sequentially on the main thread** (one file at a time: hash, then cache/lookup, then next). The `--clear-cache` prehash path is sequential. Improves Ctrl+C responsiveness compared with multi-threaded hashing in earlier 1.0.x builds.
 
 ## [1.0.7] - 2026-04-11
 
