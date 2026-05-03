@@ -19,9 +19,10 @@ htmlcov/
 external_docs/
 .publish-staging
 
-# Cursor local metadata — keep committed rules only
+# Cursor local metadata — keep committed rules and project skills only
 .cursor/*
 !.cursor/rules/
+!.cursor/skills/
 
 # Agent debug session NDJSON (optional local tooling)
 debug-*.log
