@@ -1,4 +1,4 @@
-"""Phase 2 MyList interactive wizard."""
+"""Optional advanced MyList interactive wizard."""
 
 from __future__ import annotations
 

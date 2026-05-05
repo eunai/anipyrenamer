@@ -201,6 +201,18 @@ def test_all_p0_p1_flags_exist(tmp_path: Path) -> None:
         sys.argv = orig_argv
 
 
+def test_cli_batch_size_is_not_supported() -> None:
+    """--batch-size is not part of the supported CLI surface."""
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "--batch-size", "30"]
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
+    finally:
+        sys.argv = orig_argv
+
+
 def test_cli_on_conflict_fail_exits_one(monkeypatch: pytest.MonkeyPatch) -> None:
     """--on-conflict=fail aborts when two planned items target the same destination."""
     info = FileInfo(
@@ -240,6 +252,46 @@ def test_cli_on_conflict_fail_exits_one(monkeypatch: pytest.MonkeyPatch) -> None
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
+    finally:
+        sys.argv = orig_argv
+
+
+def test_cli_dry_run_with_lookup_skip_exits_partial(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mixed successful plan plus lookup skip is partial completion (exit 2)."""
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="B" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="02",
+        episode_title="Second",
+        group_name="Group",
+    )
+    groups = [
+        DiscoveredGroup(video_path="/in/a.mkv", sidecar_paths=()),
+        DiscoveredGroup(video_path="/in/b.mkv", sidecar_paths=()),
+    ]
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "/in", "--dry-run", "--offline"]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", side_effect=["A" * 32, "B" * 32]),
+            patch("anipyrenamer.cli.get_file_info", side_effect=[None, info]),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[RenameItem("/in/b.mkv", "/dest/b.mkv", kind=RenameKind.FILE)],
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 2
     finally:
         sys.argv = orig_argv
 

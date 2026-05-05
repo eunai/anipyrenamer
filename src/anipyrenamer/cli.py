@@ -215,7 +215,7 @@ def main() -> None:
         "-y",
         "--yes",
         action="store_true",
-        help="Auto-accept apply and batch continuation.",
+        help="Auto-accept apply.",
     )
     parser.add_argument(
         "-t",
@@ -256,12 +256,6 @@ def main() -> None:
         "--offline",
         action="store_true",
         help="Use cache only; no AniDB API calls.",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=30,
-        help="Items per 'Continue with next N?' (default: 30).",
     )
     parser.add_argument(
         "--debug",

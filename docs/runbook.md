@@ -28,7 +28,7 @@ Install and developer checks: see the **Development** section in [README.md](../
 ## Destructive or careful
 
 - **Apply without `--dry-run`** — Moves files; have backups for bulk runs.
-- **`--yes`** — Auto-accepts apply; no per-batch confirmation.
+- **`--yes`** — Auto-accepts apply.
 - **`--clear-cache` / `--clear-cache-all`** — Forces refetch from AniDB on next online run; can increase API load and time.
 - **Deleting the cache file** — Same effect as clearing; keep a copy if you need to roll back metadata locally.
 

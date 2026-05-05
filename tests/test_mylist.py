@@ -1,4 +1,4 @@
-"""Tests for Phase 2 MyList wizard flow."""
+"""Tests for optional advanced MyList wizard flow."""
 
 from __future__ import annotations
 
