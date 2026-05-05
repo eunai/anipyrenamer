@@ -454,7 +454,7 @@ def _do_hashing_lookup_plan_apply(
             else:
                 size = get_file_size(group.video_path)
                 file_task = progress_file.add_task(
-                    f"[yellow]{rich_escape(path_str)}[/yellow]",
+                    f"[yellow]{rich_escape(Path(group.video_path).name)}[/yellow]",
                     total=max(1, size),
                     completed=0,
                 )
