@@ -522,6 +522,66 @@ def test_single_file_main_thread_hash(monkeypatch: pytest.MonkeyPatch) -> None:
         sys.argv = orig_argv
 
 
+def test_cli_hashing_progress_row_uses_filename_only(tmp_path: Path) -> None:
+    """Yellow per-file hashing row shows basename only, not parent directory names."""
+    from rich.progress import Progress
+
+    ancestor = tmp_path / "ancestor" / "deep"
+    ancestor.mkdir(parents=True)
+    video = ancestor / "episode.mkv"
+    video.write_bytes(b"x")
+
+    vp = str(video.resolve())
+    groups = [DiscoveredGroup(video_path=vp, sidecar_paths=())]
+    descriptions: list[str] = []
+
+    real_add_task = Progress.add_task
+
+    def capture_add_task(self: Progress, description: str, **kwargs: object):  # type: ignore[type-arg]
+        descriptions.append(description)
+        return real_add_task(self, description, **kwargs)
+
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", str(tmp_path), "--dry-run", "--offline"]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.Progress.add_task", capture_add_task),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[RenameItem(vp, "/dest/a.mkv", kind=RenameKind.FILE)],
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+    finally:
+        sys.argv = orig_argv
+
+    yellow_tasks = [d for d in descriptions if "[yellow]" in d]
+    assert yellow_tasks
+    assert all("ancestor" not in d for d in yellow_tasks)
+    assert all("deep" not in d for d in yellow_tasks)
+    assert all("episode.mkv" in d for d in yellow_tasks)
+
+
 def test_clear_cache_uses_shared_hashing_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     """--clear-cache path uses the shared _hash_group helper."""
     groups = [
