@@ -45,7 +45,8 @@ def _hash_mmap(
             try:
                 for offset in range(0, total, ED2K_CHUNK_SIZE):
                     end = min(offset + ED2K_CHUNK_SIZE, total)
-                    hashes.append(MD4.new(view[offset:end]).digest())
+                    chunk = bytes(view[offset:end])
+                    hashes.append(MD4.new(chunk).digest())
                     if progress_callback is not None:
                         progress_callback(end, total)
             finally:

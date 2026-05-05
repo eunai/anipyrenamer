@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
 from anipyrenamer.ed2k import (
     ED2K_CHUNK_SIZE,
@@ -142,6 +143,24 @@ def test_progress_callback_mmap_path(tmp_path: Path) -> None:
     assert calls[0] == (0, 200)
     assert calls[-1] == (200, 200)
     assert len(calls) == 2  # initial (0, 200) + one chunk (200, 200)
+
+
+def test_mmap_path_keyboard_interrupt_teardown_no_buffer_error(tmp_path: Path) -> None:
+    """KeyboardInterrupt during mmap hashing must not raise BufferError on mmap close."""
+    f = tmp_path / "big_enough_for_mmap"
+    f.write_bytes(b"x" * 200)
+
+    def interrupt_after_first_chunk_progress(bytes_read: int, total: int) -> None:
+        if bytes_read > 0:
+            raise KeyboardInterrupt
+
+    with patch("anipyrenamer.ed2k.MMAP_THRESHOLD", 100):
+        with pytest.raises(KeyboardInterrupt):
+            compute_ed2k(str(f), progress_callback=interrupt_after_first_chunk_progress)
+
+    other = tmp_path / "after_interrupt"
+    other.write_bytes(b"hello")
+    assert compute_ed2k(str(other)) == HELLO_ED2K
 
 
 # ── MMAP_THRESHOLD constant ─────────────────────────────────────────
