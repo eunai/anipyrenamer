@@ -48,7 +48,15 @@ def warn_if_world_readable(path: str | Path) -> None:
 
 
 def warn_if_shared_directory_windows(path: str | Path) -> None:
-    """Windows-only heuristic warning for sensitive files outside user profile dirs."""
+    """Windows-only heuristic warning for sensitive files outside user profile dirs.
+
+    Status (2026-05-08, follow-up review P2-6): retained as a tested public helper but
+    intentionally **not** wired into the CLI today — the S3 slice deferred this to
+    avoid noisy warnings in CI / editable-install checkouts. Kept on the API surface
+    so a future opt-in flag (e.g. ``--strict-permissions``) can call it without
+    re-introducing the helper. Removing this helper requires a deprecation note in
+    ``CHANGELOG.md`` and an update to ``tests/test_permissions.py``.
+    """
 
     if sys.platform != "win32":
         return
