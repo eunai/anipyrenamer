@@ -7,19 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [1.1.0] - 2026-05-07
+
+### Security
+
+- AniDB UDP `ENCRYPT` / AES session support when `ANIDB_API_KEY` is set; warning + plaintext fallback when it is missing or ENCRYPT setup fails.
+- Unix: warn when `.env` is group/other-readable; set cache DB file mode to `0o600` after creation (best-effort).
+
 ### Added
 
-- Repository `LICENSE`: **MIT**.
-
-### Fixed
-
-- Environment variables from `.env` load only when the CLI entry point runs, not when importing the CLI module. SQLite schema migrations validate dynamic column names before altering tables.
+- `--log-level` / `--log-file` structured diagnostics (stderr + optional UTF-8 file).
 
 ### Changed
 
-- Operator runbook ships at `docs/runbook.md` on the published repository.
-- ED2K hashing uses memory-mapped reads for large files (with automatic fallback) to reduce overhead on fast storage.
-- README and operator runbook describe sequential per-file hashing (hash, then cache/lookup, then the next file) and how large files use mmap with read fallback.
+- Per-file hashing progress row shows basename only.
+- Removed inert `--batch-size` option.
 
 ## [1.0.8] - 2026-04-30
 
