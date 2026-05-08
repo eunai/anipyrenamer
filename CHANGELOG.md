@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tests: regression coverage for the `Security Warning` panels printed when `ANIDB_API_KEY` is unset (plaintext UDP fallback) or when ENCRYPT setup fails (e.g. `309 API PASSWORD NOT DEFINED`); existing redaction expanded to `api_key=` alongside `pass=` and `s=`.
+
+### Changed
+
+- Internal documentation: tightened the AniDB UDP `ENCRYPT` contract description so it matches the shipped 1.1.0 behavior (CLI warning + plaintext UDP fallback when `ANIDB_API_KEY` is absent or ENCRYPT setup fails). No operator-visible behavior change.
+
 ## [1.1.1] - 2026-05-08
 
 ### Fixed
