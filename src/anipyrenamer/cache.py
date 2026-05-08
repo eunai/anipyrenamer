@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from anipyrenamer.models import FileInfo
+from anipyrenamer.permissions import ensure_owner_only
 
 CACHE_FILENAME = "anipyrenamer_cache.sqlite"
 
@@ -145,6 +146,7 @@ def init_db(db_path: str) -> None:
                     raise ValueError(f"Invalid column name: {col}")
                 conn.execute(f"ALTER TABLE file_anidb ADD COLUMN {col} TEXT")
         conn.commit()
+    ensure_owner_only(db_path)
 
 
 def clear_file_anidb_cache(db_path: str) -> None:

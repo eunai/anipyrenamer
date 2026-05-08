@@ -43,6 +43,7 @@ from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKin
 from anipyrenamer.mylist import run_mylist_wizard
 from anipyrenamer.naming import DEFAULT_FILE_TEMPLATE, DEFAULT_FOLDER_TEMPLATE
 from anipyrenamer.plan import build_plan
+from anipyrenamer.permissions import warn_if_world_readable
 from anipyrenamer.validation import (
     analyze_destination_conflicts,
     flatten_and_validate_folder_renames,
@@ -62,8 +63,13 @@ def _get_well_known_env_path() -> Path | None:
 def _load_env() -> None:
     """Load .env: project/package dir first (dev), then well-known path (global install). Later load does not override (override=False)."""
     load_dotenv()
+    local_env = Path(".env")
+    if local_env.exists():
+        warn_if_world_readable(local_env)
     well_known = _get_well_known_env_path()
     if well_known is not None:
+        if well_known.exists():
+            warn_if_world_readable(well_known)
         load_dotenv(well_known)
 
 

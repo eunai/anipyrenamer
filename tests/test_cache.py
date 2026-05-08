@@ -91,6 +91,18 @@ def test_init_db_creates_parent_directory(tmp_path: Path) -> None:
     assert db.exists()
 
 
+def test_init_db_calls_ensure_owner_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = tmp_path / "subdir" / "cache.sqlite"
+    calls: list[str] = []
+
+    def _fake_ensure(path: str) -> None:
+        calls.append(path)
+
+    monkeypatch.setattr("anipyrenamer.cache.ensure_owner_only", _fake_ensure)
+    init_db(str(db))
+    assert calls == [str(db)]
+
+
 def test_init_db_and_file_info(tmp_path: Path) -> None:
     db = str(tmp_path / "test.sqlite")
     init_db(db)

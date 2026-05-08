@@ -37,6 +37,11 @@ Install and developer checks: see the **Development** section in [README.md](../
 - **`.env`:** Project root (or parent of package) first, then Windows `%APPDATA%\anipyrenamer\.env` or Unix `~/.config/anipyrenamer/.env`. See [README.md](../README.md) and `.env.example`.
 - **Default cache:** Repo: `.cache/anipyrenamer_cache.sqlite` at project root. Else: `.cache/` under the same well-known config directory as `.env`.
 
+## File permissions (recommended)
+
+- **Unix/macOS**: ensure `.env` is not group/other-readable (recommended: `chmod 600 <path-to-.env>`). The CLI emits a warning when it detects a world-readable `.env`.
+- **Windows**: the CLI does not modify ACLs. Keep `.env` and the cache DB under your user profile (or ensure NTFS ACLs restrict access) and avoid shared folders for these files.
+
 ## Exit codes
 
 | Code | Meaning |
