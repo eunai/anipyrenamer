@@ -58,6 +58,12 @@ anipyrenamer "C:\Videos\Anime" --mylist
 
 Use `anipyrenamer --help` for all options.
 
+### Demo: `--plex --mylist`
+
+This demo shows running `anipyrenamer` with Plex-style folders and the MyList wizard (`--plex --mylist`).
+
+![Demo: anipyrenamer --plex --mylist](docs/public/media/plex-mylist-wizard.gif)
+
 ### Confirmation prompts
 
 Interactive confirmations use `Prompt text (Y/n/a):` — `Y` (default), `n`, or `a` (yes to all remaining).
