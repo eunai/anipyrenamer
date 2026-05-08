@@ -87,9 +87,9 @@ See [docs/runbook.md](docs/runbook.md) for exit codes, common failures, and safe
 
 ## Contributing and issues
 
-Report bugs and request features on [GitHub](https://github.com/eunai/anipyrenamer/issues).
+Report bugs and request features on [GitHub Issues](https://github.com/eunai/anipyrenamer/issues).
 
-**Developing from source:** The maintainer workspace and full contributor setup live in the development repository, [eunai/anipyrenamer-dev](https://github.com/eunai/anipyrenamer-dev); see its `README.md` for clone, editable install (`pip install -e ".[dev]"`), tests, and tooling.
+**From source:** Clone [eunai/anipyrenamer](https://github.com/eunai/anipyrenamer) and follow its README for optional editable install (`pip install -e .`), running tests when you hack on the code, and any extra dev dependencies.
 
 ## Development note
 
