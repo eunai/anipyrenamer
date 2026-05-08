@@ -224,6 +224,75 @@ def test_cli_keyboard_interrupt_calls_logout(
         sys.argv = orig_argv
 
 
+def test_cli_warns_when_api_key_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Follow-up review P1-A/P2-5: ANIDB_API_KEY unset emits the unencrypted-credentials panel."""
+    import anipyrenamer.cli as cli_module
+
+    (tmp_path / "a.mkv").write_bytes(b"x")
+    monkeypatch.setenv("ANIDB_USERNAME", "u")
+    monkeypatch.setenv("ANIDB_PASSWORD", "p")
+    monkeypatch.delenv("ANIDB_API_KEY", raising=False)
+    monkeypatch.setattr(cli_module, "_load_env", lambda: None)
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", str(tmp_path)]
+        with patch("anipyrenamer.anidb.AniDBClient") as MockAniDBClient:
+            mock_client = MagicMock()
+            MockAniDBClient.return_value = mock_client
+            mock_client.encrypt.return_value = (True, "")
+            mock_client.login.return_value = (True, "")
+            mock_client._session = "fake"
+            with patch("anipyrenamer.cli.compute_ed2k", side_effect=KeyboardInterrupt):
+                with pytest.raises(SystemExit):
+                    main()
+        captured = capsys.readouterr().out
+        assert "Credentials will be sent unencrypted over UDP" in captured
+        assert "Set ANIDB_API_KEY" in captured
+        mock_client.encrypt.assert_not_called()
+    finally:
+        sys.argv = orig_argv
+
+
+def test_cli_warns_when_encrypt_setup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Follow-up review P1-A/P2-5: encrypt() failure emits fallback panel and disables encryption."""
+    import anipyrenamer.cli as cli_module
+
+    (tmp_path / "a.mkv").write_bytes(b"x")
+    monkeypatch.setenv("ANIDB_USERNAME", "u")
+    monkeypatch.setenv("ANIDB_PASSWORD", "p")
+    monkeypatch.setenv("ANIDB_API_KEY", "k")
+    monkeypatch.setattr(cli_module, "_load_env", lambda: None)
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", str(tmp_path)]
+        with patch("anipyrenamer.anidb.AniDBClient") as MockAniDBClient:
+            mock_client = MagicMock()
+            MockAniDBClient.return_value = mock_client
+            mock_client.encrypt.return_value = (False, "309 API PASSWORD NOT DEFINED")
+            mock_client.login.return_value = (True, "")
+            mock_client._session = "fake"
+            with patch("anipyrenamer.cli.compute_ed2k", side_effect=KeyboardInterrupt):
+                with pytest.raises(SystemExit):
+                    main()
+        captured = capsys.readouterr().out
+        assert "Encryption setup failed" in captured
+        assert "falling back to unencrypted mode" in captured
+        mock_client.encrypt.assert_called_once()
+        mock_client.disable_encryption.assert_called_once()
+    finally:
+        sys.argv = orig_argv
+
+
 def test_apply_plex_suffix_default_template() -> None:
     """Plex suffix is inserted before %ext% in the default folder template."""
     result = _apply_plex_suffix(DEFAULT_FOLDER_TEMPLATE)

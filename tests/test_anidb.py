@@ -41,6 +41,17 @@ def test_redact_masks_encrypt_salt() -> None:
     assert "209 *** ENCRYPTION ENABLED" in out
 
 
+def test_redact_masks_api_key_value() -> None:
+    """ENCRYPT slice + follow-up review: api_key= must be redacted alongside pass= / s=."""
+    out = _redact("ENCRYPT api_key=DEADBEEF&pass=secret&s=SESS123")
+    assert "DEADBEEF" not in out
+    assert "secret" not in out
+    assert "SESS123" not in out
+    assert "api_key=***" in out
+    assert "pass=***" in out
+    assert "s=***" in out
+
+
 def test_send_recv_debug_prints_redacted_inbound_and_outbound(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
