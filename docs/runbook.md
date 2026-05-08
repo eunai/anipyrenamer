@@ -34,7 +34,7 @@ Install and developer checks: see the **Development** section in [README.md](../
 
 ## Configuration locations
 
-- **`.env`:** Project root (or parent of package) first, then Windows `%APPDATA%\anipyrenamer\.env` or Unix `~/.config/anipyrenamer/.env`. See [README.md](../README.md) and `.env.example`.
+- **`.env`:** Walk upward from your **shell’s current directory** first, then Windows `%APPDATA%\anipyrenamer\.env` or Unix `~/.config/anipyrenamer/.env`. See [README.md](../README.md) and `.env.example`.
 - **Default cache:** Repo: `.cache/anipyrenamer_cache.sqlite` at project root. Else: `.cache/` under the same well-known config directory as `.env`.
 
 ## File permissions (recommended)

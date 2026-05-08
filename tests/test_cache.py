@@ -128,7 +128,9 @@ def test_get_file_info_missing_returns_none(tmp_path: Path) -> None:
     assert get_file_info(db, 999, "x" * 32) is None
 
 
-def test_get_file_info_stale_row_returns_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_file_info_stale_row_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Cache rows older than the TTL are treated as misses."""
     db = str(tmp_path / "test.sqlite")
     init_db(db)

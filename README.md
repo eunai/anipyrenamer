@@ -36,7 +36,7 @@ Optional:
 
 - `ANIDB_API_KEY` (when UDP encryption is enabled)
 
-**Where `.env` is loaded:** project/package directory and parents first, then a well-known config path: Windows `%APPDATA%\anipyrenamer\.env`, Linux/macOS `~/.config/anipyrenamer/.env`.
+**Where `.env` is loaded:** upward from your **shell’s current directory** first (`python-dotenv` walk from cwd), then a well-known config path: Windows `%APPDATA%\anipyrenamer\.env`, Linux/macOS `~/.config/anipyrenamer/.env`.
 
 **Cache:** When a parent directory contains `pyproject.toml`, the default database is project root `.cache/anipyrenamer_cache.sqlite`. Otherwise it lives under the same config directory as `.env`. Override with `--db`.
 

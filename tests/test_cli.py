@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from pathlib import Path, WindowsPath
 from unittest.mock import MagicMock, patch
@@ -21,6 +22,61 @@ from anipyrenamer.cli import (
 from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKind
 from anipyrenamer.naming import DEFAULT_FOLDER_TEMPLATE
 from anipyrenamer.validation import flatten_and_validate_folder_renames
+
+
+def test_load_env_picks_dotenv_from_cwd_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: load .env from cwd/parent chain; do not infer from unrelated dev-repo paths."""
+    import anipyrenamer.cli as cli_module
+
+    (tmp_path / ".env").write_text(
+        "ANIDB_USERNAME=from_cwd_walk\nANIDB_PASSWORD=from_cwd_pass\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    for key in (
+        "ANIDB_USERNAME",
+        "ANIDB_PASSWORD",
+        "ANIDB_UDP_CLIENT",
+        "ANIDB_UDP_CLIENTVER",
+        "ANIDB_LOCAL_PORT",
+        "ANIDB_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setattr(cli_module, "_get_well_known_env_path", lambda: None)
+    cli_module._load_env()
+
+    assert os.environ.get("ANIDB_USERNAME") == "from_cwd_walk"
+    assert os.environ.get("ANIDB_PASSWORD") == "from_cwd_pass"
+
+
+def test_load_env_no_cwd_wellknown_cred_tmp_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No .env along cwd chain and disabled well-known => no injected AniDB creds."""
+
+    import anipyrenamer.cli as cli_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_module, "find_dotenv", lambda *a, **k: "")
+    for key in (
+        "ANIDB_USERNAME",
+        "ANIDB_PASSWORD",
+        "ANIDB_UDP_CLIENT",
+        "ANIDB_UDP_CLIENTVER",
+        "ANIDB_LOCAL_PORT",
+        "ANIDB_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setattr(cli_module, "_get_well_known_env_path", lambda: None)
+    cli_module._load_env()
+
+    assert os.environ.get("ANIDB_USERNAME") in (None, "")
+    assert os.environ.get("ANIDB_PASSWORD") in (None, "")
 
 
 def test_cli_import_does_not_call_load_dotenv_until_main(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,7 +180,9 @@ def test_cli_structured_log_file_writes_phases(tmp_path: Path) -> None:
             patch(
                 "anipyrenamer.cli.build_plan",
                 return_value=[
-                    RenameItem(str(tmp_path / "a.mkv"), str(tmp_path / "out.mkv"), kind=RenameKind.FILE)
+                    RenameItem(
+                        str(tmp_path / "a.mkv"), str(tmp_path / "out.mkv"), kind=RenameKind.FILE
+                    )
                 ],
             ),
         ):
@@ -694,9 +752,7 @@ def test_clear_cache_uses_shared_hashing_helper(monkeypatch: pytest.MonkeyPatch)
         sys.argv = orig_argv
 
 
-def test_keyboard_interrupt_during_hashing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_keyboard_interrupt_during_hashing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """KeyboardInterrupt during hashing calls logout and exits 130."""
     (tmp_path / "a.mkv").write_bytes(b"x")
     (tmp_path / "b.mkv").write_bytes(b"y")

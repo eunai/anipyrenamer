@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-05-08
+
+### Fixed
+
+- CLI: `.env` is loaded by walking upward from the **current working directory** first, then the well-known user config path (`%APPDATA%\anipyrenamer\.env` on Windows, `~/.config/anipyrenamer/.env` on Unix). Fixes incorrect loading from an unrelated editable-install source tree.
+
 ### Added
 
 - Documentation: `--plex --mylist` usage demo GIF in `README.md`.

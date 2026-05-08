@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from anipyrenamer.permissions import ensure_owner_only, warn_if_shared_directory_windows, warn_if_world_readable
+from anipyrenamer.permissions import (
+    ensure_owner_only,
+    warn_if_shared_directory_windows,
+    warn_if_world_readable,
+)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits not meaningful on Windows")
@@ -37,4 +41,3 @@ def test_windows_shared_dir_warning_is_noop_on_non_windows(tmp_path: Path) -> No
             warnings.simplefilter("always")
             warn_if_shared_directory_windows(tmp_path / "secret.txt")
         assert w == []
-
