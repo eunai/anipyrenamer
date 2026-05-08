@@ -61,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Standalone architecture flow document (content folded into the main specification).
-- Legacy implementation review document (superseded by implementation status and the spec).
+- Legacy implementation review document (superseded by the main specification §9.1).
 
 ### Fixed
 
