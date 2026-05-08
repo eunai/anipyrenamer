@@ -62,7 +62,7 @@ Use `anipyrenamer --help` for all options.
 
 This demo shows running `anipyrenamer` with Plex-style folders and the MyList wizard (`--plex --mylist`).
 
-![Demo: anipyrenamer --plex --mylist](docs/public/media/plex-mylist-wizard.gif)
+![Demo: anipyrenamer --plex --mylist](docs/media/plex-mylist-wizard.gif)
 
 ### Confirmation prompts
 
