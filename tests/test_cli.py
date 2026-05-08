@@ -147,12 +147,14 @@ def test_cli_keyboard_interrupt_calls_logout(
     (tmp_path / "a.mkv").write_bytes(b"x")
     monkeypatch.setenv("ANIDB_USERNAME", "u")
     monkeypatch.setenv("ANIDB_PASSWORD", "p")
+    monkeypatch.delenv("ANIDB_API_KEY", raising=False)
     orig_argv = sys.argv
     try:
         sys.argv = ["anipyrenamer", str(tmp_path)]
         with patch("anipyrenamer.anidb.AniDBClient") as MockAniDBClient:
             mock_client = MagicMock()
             MockAniDBClient.return_value = mock_client
+            mock_client.encrypt.return_value = (True, "")
             mock_client.login.return_value = (True, "")
             mock_client._session = "fake"
             with patch("anipyrenamer.cli.compute_ed2k", side_effect=KeyboardInterrupt):
@@ -700,12 +702,14 @@ def test_keyboard_interrupt_during_hashing(
     (tmp_path / "b.mkv").write_bytes(b"y")
     monkeypatch.setenv("ANIDB_USERNAME", "u")
     monkeypatch.setenv("ANIDB_PASSWORD", "p")
+    monkeypatch.delenv("ANIDB_API_KEY", raising=False)
     orig_argv = sys.argv
     try:
         sys.argv = ["anipyrenamer", str(tmp_path)]
         with patch("anipyrenamer.anidb.AniDBClient") as MockAniDBClient:
             mock_client = MagicMock()
             MockAniDBClient.return_value = mock_client
+            mock_client.encrypt.return_value = (True, "")
             mock_client.login.return_value = (True, "")
             mock_client._session = "fake"
             with patch("anipyrenamer.cli.compute_ed2k", side_effect=KeyboardInterrupt):

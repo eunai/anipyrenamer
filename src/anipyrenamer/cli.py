@@ -409,6 +409,30 @@ def main() -> None:
         cfg = AniDBConfig.from_env()
         if cfg.username and cfg.password:
             client = AniDBClient(cfg, debug=args.debug)
+            api_key = (cfg.api_key or "").strip()
+            if not api_key:
+                console.print(
+                    Panel(
+                        "[bold yellow]Credentials will be sent unencrypted over UDP.[/]\n"
+                        "Set ANIDB_API_KEY in .env to enable AES-128 session encryption.\n"
+                        "Use a dedicated AniDB account and avoid untrusted networks.",
+                        title="Security Warning",
+                        border_style="yellow",
+                    )
+                )
+            else:
+                ok, enc_msg = client.encrypt()
+                if not ok:
+                    console.print(
+                        Panel(
+                            "[bold yellow]Encryption setup failed; falling back to unencrypted mode.[/]\n"
+                            "Verify ANIDB_API_KEY in .env and your AniDB UDP API key settings.\n\n"
+                            f"[dim]{rich_escape(enc_msg)}[/dim]",
+                            title="Security Warning",
+                            border_style="yellow",
+                        )
+                    )
+                    client.disable_encryption()
             try:
                 ok, msg = client.login()
                 if ok:

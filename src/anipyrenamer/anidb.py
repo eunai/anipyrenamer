@@ -10,6 +10,11 @@ import socket
 import time
 from dataclasses import dataclass
 
+import hashlib
+
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad, unpad
+
 from anipyrenamer.models import FileInfo
 
 _LOGGER = logging.getLogger("anipyrenamer.anidb")
@@ -32,7 +37,10 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 def _redact(msg: str) -> str:
     """Mask sensitive values in UDP messages for debug output (pass=, session s=)."""
     # Stop at `&` so `pass=secret&s=sess` redacts both fields (not one greedy \\S+ span).
-    return re.sub(r"(pass|s)=[^&\s]+", r"\1=***", msg)
+    msg = re.sub(r"(pass|s|api_key)=[^&\s]+", r"\1=***", msg)
+    # Defensive: hide ENCRYPT salt in preview logs.
+    msg = re.sub(r"(\b209\s+)\S+(\s+ENCRYPTION ENABLED\b)", r"\1***\2", msg)
+    return msg
 
 
 def _safe_int(raw: str, *, field_name: str = "field") -> int:
@@ -84,6 +92,7 @@ class AniDBConfig:
     client: str
     clientver: str
     local_port: int
+    api_key: str = ""
 
     @classmethod
     def from_env(cls) -> AniDBConfig:
@@ -94,6 +103,7 @@ class AniDBConfig:
             client=os.environ.get("ANIDB_UDP_CLIENT", "anipyrenamer"),
             clientver=os.environ.get("ANIDB_UDP_CLIENTVER", "1"),
             local_port=int(os.environ.get("ANIDB_LOCAL_PORT", "0") or "0"),
+            api_key=os.environ.get("ANIDB_API_KEY", ""),
         )
 
 
@@ -131,11 +141,65 @@ class AniDBClient:
         self._session: str | None = None
         self._packets_sent = 0
         self._burst_start: float = 0.0
+        self._encrypted = False
+        self._aes_key: bytes | None = None
+
+    @property
+    def encryption_enabled(self) -> bool:
+        return self._encrypted and self._aes_key is not None
 
     @property
     def has_session(self) -> bool:
         """True if logged in (session key present)."""
         return self._session is not None
+
+    def _derive_aes_key(self, salt: str) -> bytes:
+        """AniDB ENCRYPT key derivation: MD5(api_key + salt) -> 16 bytes."""
+        raw = (self._config.api_key or "") + salt
+        # FIPS-mode builds may reject MD5 unless explicitly marked not-for-security.
+        try:
+            return hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).digest()
+        except TypeError:
+            return hashlib.md5(raw.encode("utf-8")).digest()
+
+    def _aes_encrypt(self, plaintext: bytes) -> bytes:
+        key = self._aes_key
+        if key is None:
+            raise RuntimeError("AES key is not set")
+        cipher = AES.new(key, AES.MODE_ECB)
+        return cipher.encrypt(pad(plaintext, AES.block_size))
+
+    def _aes_decrypt(self, ciphertext: bytes) -> bytes:
+        key = self._aes_key
+        if key is None:
+            raise RuntimeError("AES key is not set")
+        cipher = AES.new(key, AES.MODE_ECB)
+        return unpad(cipher.decrypt(ciphertext), AES.block_size)
+
+    def encrypt(self) -> tuple[bool, str]:
+        """Establish AES-128 encryption via ENCRYPT (type=1).
+
+        Returns (True, '') on success, else (False, reply/error string). This method does not log in.
+        """
+        if not self._config.api_key:
+            return (False, "ANIDB_API_KEY not set")
+        # ENCRYPT is sent unencrypted; only subsequent packets are encrypted.
+        msg = f"ENCRYPT user={self._config.username}&type=1"
+        reply = self._send_recv(msg)
+        m = re.match(r"(?:\S+\s+)?209\s+(\S+)\s+ENCRYPTION ENABLED", reply)
+        if not m:
+            self._encrypted = False
+            self._aes_key = None
+            return (False, reply)
+        salt = m.group(1)
+        self._aes_key = self._derive_aes_key(salt)
+        self._encrypted = True
+        return (True, "")
+
+    def disable_encryption(self) -> None:
+        """Explicitly return to unencrypted mode (used on ENCRYPT failure fallback)."""
+        self._encrypted = False
+        self._aes_key = None
 
     def _ensure_socket(self) -> socket.socket:
         if self._sock is None:
@@ -166,10 +230,18 @@ class AniDBClient:
                 sock = self._ensure_socket()
                 if self._debug:
                     print(f"[anidb] >>> {_redact(msg)}")
-                sock.sendto(msg.encode("utf-8"), (ANIDB_HOST, ANIDB_PORT))
+                payload = msg.encode("utf-8")
+                if self.encryption_enabled:
+                    payload = self._aes_encrypt(payload)
+                sock.sendto(payload, (ANIDB_HOST, ANIDB_PORT))
                 data, _ = sock.recvfrom(_UDP_RECV_BUFFER)
                 if len(data) == _UDP_RECV_BUFFER:
                     print("[anidb] WARNING: received data may be truncated")
+                if self.encryption_enabled:
+                    try:
+                        data = self._aes_decrypt(data)
+                    except Exception as exc:  # noqa: BLE001
+                        raise TimeoutError("AniDB encrypted reply could not be decrypted") from exc
                 reply = data.decode("utf-8", errors="replace").strip()
                 if self._debug:
                     preview = reply[:500] + "..." if len(reply) > 500 else reply
@@ -189,6 +261,11 @@ class AniDBClient:
 
     def login(self) -> tuple[bool, str]:
         """AUTH; store session key. Returns (True, '') if 200/201, else (False, reply)."""
+        if self._config.api_key and not self.encryption_enabled:
+            ok, msg = self.encrypt()
+            if not ok:
+                # Fall back to unencrypted AUTH; caller/CLI is responsible for warning the user.
+                self.disable_encryption()
         cfg = self._config
         msg = (
             f"AUTH user={cfg.username}&pass={cfg.password}"
@@ -219,11 +296,16 @@ class AniDBClient:
         try:
             sock.settimeout(timeout)
             self._throttle()
-            sock.sendto(msg.encode("utf-8"), (ANIDB_HOST, ANIDB_PORT))
+            payload = msg.encode("utf-8")
+            if self.encryption_enabled:
+                payload = self._aes_encrypt(payload)
+            sock.sendto(payload, (ANIDB_HOST, ANIDB_PORT))
             # NOTE: If adding debug output here, use _redact() (see SEC-04).
             data, _ = sock.recvfrom(_UDP_RECV_BUFFER)
             if len(data) == _UDP_RECV_BUFFER:
                 print("[anidb] WARNING: received data may be truncated")
+            if self.encryption_enabled:
+                data = self._aes_decrypt(data)
             return data.decode("utf-8", errors="replace").strip()
         except Exception:
             return None

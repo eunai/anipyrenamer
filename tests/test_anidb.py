@@ -7,8 +7,8 @@ import socket
 import pytest
 
 from anipyrenamer.anidb import (
-    MAX_FIELD_LENGTH,
     AniDBClient,
+    MAX_FIELD_LENGTH,
     AniDBConfig,
     _UDP_RECV_BUFFER,
     _looks_like_hash,
@@ -33,6 +33,12 @@ def test_redact_masks_pass_and_s_in_one_message() -> None:
     out = _redact("AUTH pass=mysecret&s=SESSKEY99")
     assert out == "AUTH pass=***&s=***"
     assert "mysecret" not in out and "SESSKEY99" not in out
+
+
+def test_redact_masks_encrypt_salt() -> None:
+    out = _redact("209 SALT123 ENCRYPTION ENABLED")
+    assert "SALT123" not in out
+    assert "209 *** ENCRYPTION ENABLED" in out
 
 
 def test_send_recv_debug_prints_redacted_inbound_and_outbound(
@@ -75,6 +81,12 @@ def test_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.client == "testclient"
     assert cfg.clientver == "2"
     assert cfg.local_port == 9876
+
+
+def test_config_from_env_includes_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANIDB_API_KEY", "k")
+    cfg = AniDBConfig.from_env()
+    assert cfg.api_key == "k"
 
 
 def test_udp_recv_buffer_constant() -> None:
@@ -190,6 +202,56 @@ def test_send_recv_retries_transient_timeout(monkeypatch: pytest.MonkeyPatch) ->
 
     reply = client._send_recv("PING")
     assert "200 SESSION" in reply
+
+
+def test_encrypt_success_enables_encryption(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AniDBConfig("u", "p", "c", "1", 0, api_key="k")
+    client = AniDBClient(cfg)
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "209 SALT123 ENCRYPTION ENABLED")
+    ok, msg = client.encrypt()
+    assert ok is True and msg == ""
+    assert client.encryption_enabled is True
+
+
+def test_encrypt_failure_does_not_enable_encryption(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AniDBConfig("u", "p", "c", "1", 0, api_key="k")
+    client = AniDBClient(cfg)
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "309 API PASSWORD NOT DEFINED")
+    ok, msg = client.encrypt()
+    assert ok is False
+    assert "309" in msg
+    assert client.encryption_enabled is False
+
+
+def test_send_recv_encrypts_payload_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Force a known key and encryption state without depending on ENCRYPT reply parsing.
+    cfg = AniDBConfig("u", "p", "c", "1", 0, api_key="k")
+    client = AniDBClient(cfg)
+    client._aes_key = b"\x00" * 16
+    client._encrypted = True
+
+    class FakeSock:
+        sent: bytes | None = None
+
+        def sendto(self, payload: bytes, addr: tuple[str, int]) -> None:  # noqa: ARG002
+            self.sent = payload
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:  # noqa: ARG002
+            # Return encrypted bytes for plaintext "200 OK" using the same key.
+            from Crypto.Cipher import AES
+            from Crypto.Util.Padding import pad
+
+            cipher = AES.new(b"\x00" * 16, AES.MODE_ECB)
+            return cipher.encrypt(pad(b"200 OK", AES.block_size)), ("api.anidb.net", 9000)
+
+    fake = FakeSock()
+    monkeypatch.setattr(client, "_ensure_socket", lambda: fake)
+    monkeypatch.setattr(client, "_throttle", lambda: None)
+
+    reply = client._send_recv("PING")
+    assert reply == "200 OK"
+    assert fake.sent is not None
+    assert fake.sent != b"PING"
 
 
 def test_mylist_entry_by_fid_parses_221_response(monkeypatch: pytest.MonkeyPatch) -> None:

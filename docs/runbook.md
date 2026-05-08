@@ -74,3 +74,8 @@ Treat **2** as “review the log and plan, fix issues, re-run if needed.”
 - **Environment loading:** Variables from `.env` load when you run the `anipyrenamer` command (`anipyrenamer.cli:main`), not when importing the package as a library.
 
 For offline retries, warm the cache with a successful online run, then use `--offline` for subsequent passes.
+
+## Encryption (AniDB UDP `ENCRYPT`)
+
+- Set `ANIDB_API_KEY` (AniDB profile: Settings → Account → UDP API Key) to enable AES session encryption for UDP traffic.
+- If `ANIDB_API_KEY` is missing (or ENCRYPT setup fails), the CLI shows a warning and proceeds in plaintext UDP mode (credentials included in `AUTH`).
