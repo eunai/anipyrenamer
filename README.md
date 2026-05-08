@@ -74,6 +74,10 @@ See [docs/runbook.md](docs/runbook.md) for exit codes, common failures, and safe
 
 Report bugs and request features via the project issue tracker on [GitHub](https://github.com/eunai/anipyrenamer/issues).
 
+## Development
+
+Parts of this codebase were written or refactored with **AI-assisted coding tools**, alongside manual design, testing, and review. Human maintainers remain responsible for behavior and releases.
+
 ## License
 
 Distributed under the [MIT License](LICENSE). Dependency licenses vary; review them when preparing redistributions (wheel, bundle, installer).
