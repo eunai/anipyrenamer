@@ -19,6 +19,9 @@ htmlcov/
 external_docs/
 .publish-staging
 
+# skills.sh / npx skills — generated install tree (lockfile is `skills-lock.json`)
+.agents/
+
 # Cursor local metadata — keep committed rules and project skills only
 .cursor/*
 !.cursor/rules/
