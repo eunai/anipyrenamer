@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import signal
 import sys
@@ -64,6 +65,45 @@ def _load_env() -> None:
     well_known = _get_well_known_env_path()
     if well_known is not None:
         load_dotenv(well_known)
+
+
+_LOG = logging.getLogger("anipyrenamer.cli")
+
+
+def _configure_cli_logging(*, level_name: str, log_file: str | None) -> None:
+    """Configure the ``anipyrenamer.*`` logging namespace (stderr + optional UTF-8 file)."""
+    pkg = logging.getLogger("anipyrenamer")
+    pkg.handlers.clear()
+    pkg.propagate = False
+
+    level = getattr(logging, level_name.upper(), logging.WARNING)
+    pkg.setLevel(level)
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+    stderr_h = logging.StreamHandler(sys.stderr)
+    stderr_h.setLevel(level)
+    stderr_h.setFormatter(fmt)
+    pkg.addHandler(stderr_h)
+
+    if not log_file:
+        return
+
+    path = Path(log_file)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Could not create log file directory ({path.parent}): {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        file_h = logging.FileHandler(path, encoding="utf-8")
+    except OSError as exc:
+        print(f"Could not open --log-file {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    file_h.setLevel(level)
+    file_h.setFormatter(fmt)
+    pkg.addHandler(file_h)
 
 
 # Exit code when user interrupts (e.g. Ctrl+C)
@@ -300,7 +340,24 @@ def main() -> None:
         action="store_true",
         help="After pipeline completion, run interactive MyList update wizard.",
     )
+    parser.add_argument(
+        "--log-level",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default="WARNING",
+        help=(
+            "Minimum level for structured ``anipyrenamer.*`` log records on stderr "
+            "(default: %(default)s). Does not silence Rich/console output."
+        ),
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        metavar="PATH",
+        help="Append structured logs (UTF-8) to this file (same levels as --log-level).",
+    )
     args = parser.parse_args()
+
+    _configure_cli_logging(level_name=args.log_level, log_file=args.log_file)
 
     if not args.paths:
         parser.print_help()
@@ -315,6 +372,7 @@ def main() -> None:
 
     console.print("[bold]Discovery[/bold]")
     groups = discover(args.paths)
+    _LOG.info("phase=discovery group_count=%d", len(groups))
     if not groups:
         console.print("[yellow]No video files found.[/yellow]")
         sys.exit(0)
@@ -416,6 +474,7 @@ def _do_hashing_lookup_plan_apply(
 ) -> None:
     """Hashing and lookup, then plan, preview, and optionally apply."""
     console.print("[bold]Hashing and lookup[/bold]")
+    _LOG.info("phase=hash_lookup group_count=%d", len(groups))
     all_items: list[tuple[list[RenameItem], str]] = []  # (items, batch_id placeholder)
     resolved_infos: list[FileInfo] = []
     # Overall: bar only (no ETA at top). Per-file: one row during hashing (current file).
@@ -448,6 +507,8 @@ def _do_hashing_lookup_plan_apply(
     with Live(group_render, console=console, refresh_per_second=8) as live:
         for i, group in enumerate(groups):
             path_str = str(group.video_path)
+            basename = Path(path_str).name
+            lookup_source: str | None = None
             cached_hash = precomputed_hashes.get(group.video_path)
             if cached_hash is not None:
                 size, ed2k = cached_hash
@@ -482,6 +543,7 @@ def _do_hashing_lookup_plan_apply(
                             "[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]"
                         )
             if info is not None:
+                lookup_source = "cache"
                 console.print(
                     f"[blue]📁 Using local cache for {rich_escape(path_str)}[/blue] "
                     "(use [bold]--clear-cache[/bold] to refetch from AniDB)"
@@ -489,9 +551,13 @@ def _do_hashing_lookup_plan_apply(
             if info is None and client and not anidb_aborted:
                 try:
                     info = client.file_lookup(size, ed2k)
+                    if info is not None:
+                        lookup_source = "anidb"
                     if info is None and not client.has_session:
                         client.login()
                         info = client.file_lookup(size, ed2k)
+                        if info is not None:
+                            lookup_source = "anidb"
                     consecutive_timeouts = 0
                 except TimeoutError:
                     consecutive_timeouts += 1
@@ -511,6 +577,11 @@ def _do_hashing_lookup_plan_apply(
                         f"[green]🌐 Fetched from AniDB for {rich_escape(path_str)}[/green]"
                     )
             if info is None:
+                _LOG.info(
+                    "phase=lookup basename=%s fid=0 lookup_source=%s",
+                    basename,
+                    lookup_source if lookup_source is not None else "skip",
+                )
                 skip_item = RenameItem(
                     old_path=group.video_path,
                     new_path="(AniDB lookup failed)",
@@ -524,6 +595,13 @@ def _do_hashing_lookup_plan_apply(
                     description=f"Hashing and lookup {i + 1}/{len(groups)}",
                 )
                 continue
+            assert lookup_source is not None
+            _LOG.info(
+                "phase=lookup basename=%s fid=%d lookup_source=%s",
+                basename,
+                info.fid,
+                lookup_source,
+            )
             use_folder = args.folder or args.plex
             folder_tpl: str | None = None
             if use_folder:
@@ -557,6 +635,12 @@ def _do_hashing_lookup_plan_apply(
         console.print(Panel("\n".join(warnings), title="Warnings", border_style="yellow"))
 
     console.print("[bold]Rename plan[/bold]")
+    _LOG.info(
+        "phase=plan item_count=%d dry_run=%s preview_format=%s",
+        len(flat_items),
+        args.dry_run,
+        args.preview_format,
+    )
     if args.preview_format == "json":
         preview_items = [
             {
@@ -581,6 +665,7 @@ def _do_hashing_lookup_plan_apply(
         sys.exit(0)
 
     if args.dry_run:
+        _LOG.info("phase=apply dry_run=yes file_operations=%d", file_items_count)
         console.print("[green]Dry run; no files changed.[/green]")
         plan_skips = sum(1 for i in flat_items if i.kind == RenameKind.SKIP)
         exit_code = EXIT_PARTIAL if plan_skips > 0 or len(dest_conflicts) > 0 else 0
@@ -614,6 +699,7 @@ def _do_hashing_lookup_plan_apply(
     console.print("[bold]Apply[/bold]")
     file_items = [i for i in flat_items if i.kind == RenameKind.FILE]
     total_apply = len(file_items)
+    _LOG.info("phase=apply dry_run=no file_operations=%d", total_apply)
     # One overall bar (Renaming N/M) only; no per-file line.
     progress_apply_overall = Progress(
         SpinnerColumn(),

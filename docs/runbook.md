@@ -63,6 +63,7 @@ Treat **2** as “review the log and plan, fix issues, re-run if needed.”
 
 - **Normal:** Rich progress, cache vs fetch indicators, Warnings panel for conflicts.
 - **Hashing phase:** One per-file progress row shows the file **currently** being hashed; after its hash completes, cache/AniDB lookup runs before the next file. Large files may use a faster read path when mmap is available.
+- **`--log-level` / `--log-file`:** Standard-library logging for the `anipyrenamer.*` namespace (`DEBUG`/`INFO`/`WARNING`/`ERROR`, default warning on stderr); optional `--log-file` mirrors the same structured lines as UTF-8 append. Independent of Rich; does not weaken redaction.
 - **`--debug`:** Extra diagnostics; passwords and session keys must not appear in logs. AniDB UDP debug lines redact `pass=` and `s=` (session) in outbound and inbound previews (`src/anipyrenamer/anidb.py`). If you see a warning that received data may be truncated, the UDP reply was large and metadata may be incomplete.
 - **Plan errors (`escapes destination root`):** The rename plan refused a path that would resolve outside the allowed directory (custom destination, folder layout, or source parent). Adjust templates or paths.
 - **Environment loading:** Variables from `.env` load when you run the `anipyrenamer` command (`anipyrenamer.cli:main`), not when importing the package as a library.

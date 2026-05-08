@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import random
 import re
@@ -10,6 +11,8 @@ import time
 from dataclasses import dataclass
 
 from anipyrenamer.models import FileInfo
+
+_LOGGER = logging.getLogger("anipyrenamer.anidb")
 
 ANIDB_HOST = "api.anidb.net"
 ANIDB_PORT = 9000
@@ -196,7 +199,17 @@ class AniDBClient:
         m = re.match(r"(?:\S+\s+)?(?:200|201)\s+(\S+)\s+LOGIN", reply)
         if m:
             self._session = m.group(1)
+            code = _extract_reply_code(reply)
+            _LOGGER.info(
+                "op=AUTH reply_code=%s outcome=accepted",
+                code if code is not None else "unknown",
+            )
             return (True, "")
+        code = _extract_reply_code(reply)
+        _LOGGER.info(
+            "op=AUTH reply_code=%s outcome=rejected",
+            code if code is not None else "unknown",
+        )
         return (False, reply)
 
     def _send_recv_once(self, msg: str, *, timeout: float = 5.0) -> str | None:
@@ -246,6 +259,18 @@ class AniDBClient:
         reply = self._send_recv(msg)
         lines = reply.split("\n")
         first = lines[0].strip()
+        code = _extract_reply_code(first)
+        if "220 FILE" in first:
+            outcome = "success"
+        elif "506" in first:
+            outcome = "session_invalid"
+        else:
+            outcome = "no_file_or_error"
+        _LOGGER.info(
+            "op=FILE reply_code=%s outcome=%s",
+            code if code is not None else "unknown",
+            outcome,
+        )
         if "220 FILE" not in first:
             if "506" in first:
                 self._session = None  # Invalid session; caller should re-login and retry

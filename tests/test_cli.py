@@ -86,6 +86,60 @@ def test_cli_dry_run_empty_dir(tmp_path: Path) -> None:
         sys.argv = orig_argv
 
 
+def test_cli_structured_log_file_writes_phases(tmp_path: Path) -> None:
+    """--log-file with --log-level INFO records key=value phases under anipyrenamer.* (UTF-8)."""
+    log_path = tmp_path / "logs" / "run.log"
+    orig_argv = sys.argv
+    try:
+        sys.argv = [
+            "anipyrenamer",
+            str(tmp_path),
+            "--dry-run",
+            "--offline",
+            "--log-level",
+            "INFO",
+            "--log-file",
+            str(log_path),
+        ]
+        info = FileInfo(
+            fid=1,
+            aid=2,
+            eid=3,
+            gid=4,
+            size=10,
+            ed2k="A" * 32,
+            quality="high",
+            source="TV",
+            anime_title="Show",
+            episode_number="01",
+            episode_title="Pilot",
+            group_name="Group",
+        )
+        groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[
+                    RenameItem(str(tmp_path / "a.mkv"), str(tmp_path / "out.mkv"), kind=RenameKind.FILE)
+                ],
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+    finally:
+        sys.argv = orig_argv
+    lines = log_path.read_text(encoding="utf-8")
+    assert "phase=discovery group_count=" in lines.replace("\n", " ")
+    assert "phase=hash_lookup group_count=" in lines.replace("\n", " ")
+    assert "phase=plan " in lines
+    assert "phase=apply dry_run=yes" in lines.replace("\n", " ")
+
+
 def test_cli_keyboard_interrupt_calls_logout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -191,6 +245,10 @@ def test_all_p0_p1_flags_exist(tmp_path: Path) -> None:
             "--preview-format",
             "json",
             "--refresh-cache",
+            "--log-level",
+            "INFO",
+            "--log-file",
+            str(tmp_path / "cli_flags.log"),
         ]
         with patch("anipyrenamer.cli.discover", return_value=[]):
             try:
