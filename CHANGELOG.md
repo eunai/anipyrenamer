@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CLI: Rename plan preview now renders flat `Folders`, `Files`, and conditional `Files (skipped)` sections with a factored plan-root header per filesystem root. The `Files` section uses Unicode tree branches under each source folder and highlights diverging destination path segments in green, replacing the single flat preview table.
 - Internal documentation: tightened the AniDB UDP `ENCRYPT` contract description so it matches the shipped 1.1.0 behavior (CLI warning + plaintext UDP fallback when `ANIDB_API_KEY` is absent or ENCRYPT setup fails). No operator-visible behavior change.
 
 ## [1.1.1] - 2026-05-08

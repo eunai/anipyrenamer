@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from pathlib import Path, WindowsPath
 from unittest.mock import MagicMock, patch
 
 import pytest
+from rich.console import Console
 
 from anipyrenamer.cli import (
     EXIT_INTERRUPTED,
@@ -481,6 +483,57 @@ def test_cli_dry_run_with_lookup_skip_exits_partial(monkeypatch: pytest.MonkeyPa
             assert exc_info.value.code == 2
     finally:
         sys.argv = orig_argv
+
+
+def test_cli_preview_format_json_payload_unchanged() -> None:
+    """JSON preview remains a flat list of plan item dicts."""
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+        anime_type="tv",
+    )
+    group = DiscoveredGroup(video_path="/in/a.mkv", sidecar_paths=())
+    item = RenameItem("/in/a.mkv", "/out/Show 01.mkv", kind=RenameKind.FILE, anime_type="tv")
+    recorded = Console(record=True, force_terminal=True, color_system="truecolor", width=200)
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "/in", "--dry-run", "--offline", "--preview-format", "json"]
+        with (
+            patch("anipyrenamer.cli.Console", return_value=recorded),
+            patch("anipyrenamer.cli.discover", return_value=[group]),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cli.build_plan", return_value=[item]),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+    finally:
+        sys.argv = orig_argv
+
+    output = recorded.export_text()
+    json_start = output.index("[\n")
+    json_end = output.index("\nDry run", json_start)
+    payload = json.loads(output[json_start:json_end])
+    assert payload == [
+        {
+            "old_path": "/in/a.mkv",
+            "new_path": "/out/Show 01.mkv",
+            "kind": "file",
+            "anime_type": "tv",
+        }
+    ]
 
 
 def test_apply_suffix_conflict_resolution_dedupes_planned_collisions() -> None:

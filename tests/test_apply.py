@@ -4,25 +4,204 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 from anipyrenamer.apply import _plan_sort_key, apply_plan, preview_plan
 from anipyrenamer.models import RenameItem, RenameKind
 
 
-def test_preview_plan_no_crash(capsys: pytest.CaptureFixture[str]) -> None:
-    items = [RenameItem("/a/x.mkv", "/b/y.mkv")]
-    preview_plan(items)
-    # Rich prints to console; just ensure no exception
-    assert True
+def _preview_text(items: list[RenameItem], *, styles: bool = False) -> str:
+    console = Console(record=True, force_terminal=True, color_system="truecolor", width=200)
+    preview_plan(items, console)
+    return console.export_text(styles=styles)
 
 
-def test_preview_plan_with_skip_item_no_crash(capsys: pytest.CaptureFixture[str]) -> None:
-    """Preview table includes SKIP items (AniDB lookup failed) without crashing."""
+def test_preview_plan_no_crash() -> None:
+    items = [RenameItem("/media/Old/x.mkv", "/media/New/y.mkv")]
+    output = _preview_text(items)
+    assert "Folders" in output
+    assert "Files" in output
+
+
+def test_preview_plan_with_skip_item_no_crash() -> None:
+    """Preview includes SKIP items (AniDB lookup failed) without crashing."""
     items = [
         RenameItem("/path/to/video.mkv", "(AniDB lookup failed)", kind=RenameKind.SKIP),
     ]
-    preview_plan(items)
-    assert True
+    output = _preview_text(items)
+    assert "Files (skipped)" in output
+    assert "(AniDB lookup failed)" in output
+
+
+def test_preview_plan_empty_input_prints_nothing() -> None:
+    assert _preview_text([]) == ""
+
+
+def test_preview_plan_renders_three_sections_when_all_present() -> None:
+    items = [
+        RenameItem("/media/Old/ep01.mkv", "/media/New/Show 01.mkv"),
+        RenameItem("/media/Same/ep02.mkv", "/media/Same/Show 02.mkv"),
+        RenameItem("/media/Failed/ep03.mkv", "(AniDB lookup failed)", kind=RenameKind.SKIP),
+    ]
+    output = _preview_text(items)
+    assert output.index("Folders") < output.index("Files") < output.index("Files (skipped)")
+
+
+def test_preview_plan_omits_folders_section_when_all_in_place() -> None:
+    output = _preview_text([RenameItem("/media/Same/ep01.mkv", "/media/Same/Show 01.mkv")])
+    assert "Folders" not in output
+    assert "Files" in output
+
+
+def test_preview_plan_omits_files_section_when_only_skip_items() -> None:
+    output = _preview_text(
+        [RenameItem("/media/Failed/ep01.mkv", "(AniDB lookup failed)", kind=RenameKind.SKIP)]
+    )
+    assert "Folders" not in output
+    assert "Files (skipped)" in output
+    assert "│ Files " not in output
+
+
+def test_preview_plan_factors_plan_root_line() -> None:
+    output = _preview_text(
+        [
+            RenameItem("/media/animu/Old/ep01.mkv", "/media/animu/New/Show 01.mkv"),
+            RenameItem("/media/animu/Old/ep02.mkv", "/media/animu/New/Show 02.mkv"),
+        ]
+    )
+    assert "/media/animu" in output
+    assert "/media/animu/Old/ep01.mkv" not in output
+
+
+def test_preview_plan_multi_filesystem_root_renders_two_plan_root_lines() -> None:
+    output = _preview_text(
+        [
+            RenameItem(r"D:\media\Old\ep01.mkv", r"D:\media\New\Show 01.mkv"),
+            RenameItem(r"K:\animu\Old\ep01.mkv", r"K:\animu\New\Movie 01.mkv"),
+        ]
+    )
+    assert r"D:\media" in output
+    assert r"K:\animu" in output
+
+
+def test_preview_plan_folders_table_dedupes_by_old_new_parent_pair() -> None:
+    output = _preview_text(
+        [
+            RenameItem("/media/Old/ep01.mkv", "/media/New/Show 01.mkv"),
+            RenameItem("/media/Old/ep02.mkv", "/media/New/Show 02.mkv"),
+        ]
+    )
+    assert output.count("Old/") == 2  # one Folders row + one Files header row
+    assert output.count("New/") == 2
+
+
+def test_preview_plan_folders_table_omits_in_place_renames() -> None:
+    output = _preview_text(
+        [
+            RenameItem("/media/Same/ep01.mkv", "/media/Same/Show 01.mkv"),
+            RenameItem("/media/Old/ep02.mkv", "/media/New/Show 02.mkv"),
+        ]
+    )
+    assert "Same/" not in output.split("Files", 1)[0]
+    assert "Old/" in output.split("Files", 1)[0]
+
+
+def test_preview_plan_files_tree_renders_branches() -> None:
+    output = _preview_text(
+        [
+            RenameItem("/media/Old/ep01.mkv", "/media/New/Show 01.mkv"),
+            RenameItem("/media/Old/ep02.mkv", "/media/New/Show 02.mkv"),
+        ]
+    )
+    assert "├─ ep01.mkv" in output
+    assert "└─ ep02.mkv" in output
+    assert "├─ Show 01.mkv" in output
+    assert "└─ Show 02.mkv" in output
+
+
+def test_preview_plan_files_tree_loose_file_has_no_folder_header() -> None:
+    output = _preview_text([RenameItem("/media/old.mkv", "/media/new.mkv")])
+    assert "old.mkv" in output
+    assert "new.mkv" in output
+    assert "old/" not in output
+    assert "new/" not in output
+
+
+def test_preview_plan_files_tree_in_place_rename_shows_same_folder_both_sides() -> None:
+    output = _preview_text(
+        [
+            RenameItem("/media/Same/ep01.mkv", "/media/Same/Show 01.mkv"),
+            RenameItem("/media/Other/ep02.mkv", "/media/Other/Show 02.mkv"),
+        ]
+    )
+    assert output.count("Same/") == 2
+
+
+def test_preview_plan_skip_section_renders_anidb_lookup_failed_literal() -> None:
+    output = _preview_text(
+        [RenameItem("/media/Failed/ep01.mkv", "(AniDB lookup failed)", kind=RenameKind.SKIP)]
+    )
+    assert "└─ (AniDB lookup failed)" in output
+
+
+def test_preview_plan_segment_diff_colors_diverging_suffix() -> None:
+    output = _preview_text(
+        [RenameItem("/media/Old/ep01.mkv", "/media/New/Show 01.mkv")], styles=True
+    )
+    assert "\x1b[32mNew" in output
+    assert "32mShow 01.mkv" in output
+
+
+def test_preview_plan_skip_section_uses_no_green_styling() -> None:
+    output = _preview_text(
+        [RenameItem("/media/Failed/ep01.mkv", "(AniDB lookup failed)", kind=RenameKind.SKIP)],
+        styles=True,
+    )
+    assert "\x1b[32m" not in output
+
+
+def test_preview_plan_cross_drive_row_renders_absolute_current() -> None:
+    output = _preview_text([RenameItem(r"D:\source\Old\ep01.mkv", r"K:\dest\New\Show 01.mkv")])
+    assert "D:\\source\\Old\\" in output
+    assert r"K:\dest\New\Show 01.mkv" not in output
+    assert r"K:\dest" in output
+
+
+def test_preview_plan_folders_sorted_by_new_parent_casefold() -> None:
+    output = _preview_text(
+        [
+            RenameItem("/media/old-b/ep01.mkv", "/media/Bbb/Show 01.mkv"),
+            RenameItem("/media/old-a/ep01.mkv", "/media/aaa/Show 01.mkv"),
+        ]
+    )
+    assert output.index("aaa/") < output.index("Bbb/")
+
+
+def test_preview_plan_files_within_folder_sorted_by_episode() -> None:
+    output = _preview_text(
+        [
+            RenameItem("/media/Old/ep03.mkv", "/media/New/Show ep03.mkv"),
+            RenameItem("/media/Old/ep01.mkv", "/media/New/Show ep01.mkv"),
+            RenameItem("/media/Old/ep02.mkv", "/media/New/Show ep02.mkv"),
+        ]
+    )
+    assert output.index("Show ep01.mkv") < output.index("Show ep02.mkv")
+    assert output.index("Show ep02.mkv") < output.index("Show ep03.mkv")
+
+
+def test_preview_plan_type_from_first_file_in_bucket() -> None:
+    output = _preview_text(
+        [
+            RenameItem("/media/Old/ep01.mkv", "/media/New/Show 01.mkv", anime_type="tv"),
+            RenameItem("/media/Old/ep02.mkv", "/media/New/Show 02.mkv", anime_type="movie"),
+        ]
+    )
+    assert " tv" in output
+
+
+def test_preview_plan_type_empty_renders_em_dash() -> None:
+    output = _preview_text([RenameItem("/media/Old/ep01.mkv", "/media/New/Show 01.mkv")])
+    assert "—" in output
 
 
 def test_preview_plan_sorted_by_folder_then_episode() -> None:
