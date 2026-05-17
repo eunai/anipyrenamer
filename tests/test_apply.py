@@ -144,6 +144,52 @@ def test_preview_plan_skip_section_renders_anidb_lookup_failed_literal() -> None
     assert "└─ (AniDB lookup failed)" in output
 
 
+def test_preview_plan_columns_have_vertical_separators() -> None:
+    """All Folders + Files preview tables draw `│` between every column (S9 / ADR 0003)."""
+    output = _preview_text(
+        [
+            RenameItem("/media/Old/ep01.mkv", "/media/New/Show 01.mkv", anime_type="tv"),
+            RenameItem("/media/Old/ep02.mkv", "/media/New/Show 02.mkv", anime_type="tv"),
+        ]
+    )
+
+    # Folders body row has three columns (Current, New, Type) → at least 2 column separators.
+    folders_body = [
+        line for line in output.splitlines() if "Old/" in line and "New/" in line and " tv" in line
+    ]
+    assert folders_body, f"no Folders body row with 'tv' Type cell found in:\n{output}"
+    for line in folders_body:
+        assert line.count("│") >= 2, (
+            f"Folders body row missing two vertical separators (Current│New│Type): {line!r}"
+        )
+
+    # Files body row has two columns (Current, New) → at least 1 column separator.
+    files_body = [
+        line for line in output.splitlines() if "ep01.mkv" in line and "Show 01.mkv" in line
+    ]
+    assert files_body, f"no Files body row for ep01/Show 01 found in:\n{output}"
+    for line in files_body:
+        assert "│" in line, f"Files body row missing vertical separator (Current│New): {line!r}"
+
+
+def test_preview_plan_skipped_table_has_vertical_separators() -> None:
+    """Files (skipped) preview table draws `│` between Current and New (S9 / ADR 0003)."""
+    output = _preview_text(
+        [RenameItem("/media/Failed/ep01.mkv", "(AniDB lookup failed)", kind=RenameKind.SKIP)]
+    )
+
+    skipped_body = [
+        line
+        for line in output.splitlines()
+        if "ep01.mkv" in line and "(AniDB lookup failed)" in line
+    ]
+    assert skipped_body, f"no Files (skipped) body row found in:\n{output}"
+    for line in skipped_body:
+        assert "│" in line, (
+            f"Files (skipped) body row missing vertical separator (Current│New): {line!r}"
+        )
+
+
 def test_preview_plan_segment_diff_colors_diverging_suffix() -> None:
     output = _preview_text(
         [RenameItem("/media/Old/ep01.mkv", "/media/New/Show 01.mkv")], styles=True

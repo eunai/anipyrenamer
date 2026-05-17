@@ -183,7 +183,7 @@ def _skip_file_sort_key(item: RenameItem) -> str:
 
 def _preview_table(*columns: str, header_style: str = "bold") -> Table:
     table = Table(
-        box=box.SIMPLE,
+        box=box.MINIMAL,
         show_header=True,
         header_style=header_style,
         padding=(0, 1),
