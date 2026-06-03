@@ -248,6 +248,31 @@ def _apply_suffix_conflict_resolution(items: list[RenameItem], *, strategy: str)
             reserved.add(key)
 
 
+def _interactive_scan_path(console: Console) -> str | None:
+    """Interactive start: prompt for exactly one existing scan path (TTY-only).
+
+    Returns the entered path, or ``None`` to stop without running the pipeline.
+    An empty submit bails out silently; a Ctrl-C / Esc cancel (``questionary``
+    returns ``None``) prints ``Cancelled.``. A non-empty path that does not exist
+    re-prompts with an error. No path normalization happens here — that stays in
+    ``discovery._normalize_path`` downstream.
+    """
+    import questionary
+
+    while True:
+        # questionary is untyped (.ask() -> Any); annotate to keep the seam typed.
+        answer: str | None = questionary.path("Path to scan:").ask()
+        if answer is None:
+            console.print("Cancelled.")
+            return None
+        if answer == "":
+            return None
+        if not Path(answer).exists():
+            console.print(f"[red]Path not found:[/red] {rich_escape(answer)}")
+            continue
+        return answer
+
+
 def main() -> None:
     """Run full pipeline: discover, hash, lookup, plan, preview, apply."""
     _load_env()
@@ -374,11 +399,20 @@ def main() -> None:
 
     _configure_cli_logging(level_name=args.log_level, log_file=args.log_file)
 
-    if not args.paths:
-        parser.print_help()
-        sys.exit(0)
-
     console = Console()
+
+    if not args.paths:
+        # Interactive start (TTY-only): with no positional path, a non-TTY stdin
+        # keeps the legacy behavior (print help, exit 0) so scripts never block;
+        # a TTY prompts for one scan path and continues the normal pipeline.
+        if not sys.stdin.isatty():
+            parser.print_help()
+            sys.exit(0)
+        scan_path = _interactive_scan_path(console)
+        if scan_path is None:
+            sys.exit(0)
+        args.paths = [scan_path]
+
     db_path = get_db_path(args.db)
     init_db(db_path)
     if args.clear_cache_all:
