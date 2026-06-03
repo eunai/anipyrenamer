@@ -91,7 +91,9 @@ See [CHANGELOG.md](CHANGELOG.md) for user-facing release history.
 
 ## Contributing and issues
 
-Report bugs and request features on [GitHub Issues](https://github.com/eunai/anipyrenamer/issues).
+Report bugs and request features on the public repo's [GitHub Issues](https://github.com/eunai/anipyrenamer/issues).
+
+Maintainers implement and track work in a separate private development repo. If a public report turns into scheduled implementation work, maintainers may link it to a private tracking issue while keeping the public issue as the user-facing thread for acknowledgement, release updates, and closure.
 
 **From source:** Clone [eunai/anipyrenamer](https://github.com/eunai/anipyrenamer) and follow its README for optional editable install (`pip install -e .`), running tests when you hack on the code, and any extra dev dependencies.
 
