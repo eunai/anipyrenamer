@@ -85,6 +85,10 @@ Developed and tested on **Windows** and **Unix-like** systems (Linux, macOS). Pa
 
 See [docs/runbook.md](docs/runbook.md) for exit codes, common failures, and safe reruns.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for user-facing release history.
+
 ## Contributing and issues
 
 Report bugs and request features on [GitHub Issues](https://github.com/eunai/anipyrenamer/issues).
