@@ -131,6 +131,119 @@ def test_cli_no_paths_exits_zero() -> None:
         sys.argv = orig_argv
 
 
+# --- Interactive start: no-path scan-path spine (Issue #7) -------------------
+#
+# Mocking seam: production gates the whole flow on ``sys.stdin.isatty()`` and,
+# on a TTY, calls ``questionary.path(<message>).ask()`` behind a lazy
+# ``import questionary``. Tests drive the public entry point ``main()`` with no
+# positional path and:
+#   * patch ``sys.stdin.isatty`` to select the TTY vs non-TTY branch, and
+#   * patch ``questionary.path`` to return a stub whose ``.ask()`` yields the
+#     simulated operator input — a path string, ``""`` for an empty submit, or
+#     ``None`` for a Ctrl-C / Esc cancel (questionary returns ``None`` on cancel).
+
+
+def _run_main_no_path() -> int:
+    """Invoke ``main()`` with a bare ``anipyrenamer`` argv; return the exit code."""
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer"]
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        code = exc_info.value.code
+        return 0 if code is None else int(code)
+    finally:
+        sys.argv = orig_argv
+
+
+def test_no_path_non_tty_prints_help_and_exits_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No path on a non-TTY stdin keeps legacy behavior: print help, exit 0, no prompt."""
+    with patch("sys.stdin.isatty", return_value=False), patch("questionary.path") as q_path:
+        code = _run_main_no_path()
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "usage:" in out.lower()  # argparse help, not the pipeline
+    assert "Discovery" not in out
+    q_path.assert_not_called()  # interactive prompt never reached off a TTY
+
+
+def test_no_path_tty_valid_path_enters_pipeline(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A valid scan path from the TTY prompt is accepted and the normal pipeline runs."""
+    stub = MagicMock()
+    stub.ask.return_value = str(tmp_path)  # existing (empty) directory
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=stub
+    ):
+        code = _run_main_no_path()
+    out = capsys.readouterr().out
+    assert code == 0
+    assert stub.ask.call_count == 1
+    # Pipeline entered with the prompted path: discovery ran and found no videos.
+    assert "Discovery" in out
+    assert "No video files found." in out
+    assert "usage:" not in out.lower()
+
+
+def test_no_path_tty_nonexistent_path_reprompts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A nonexistent entered path re-prompts; it is never passed to the pipeline."""
+    missing = str(tmp_path / "does-not-exist")
+    stub = MagicMock()
+    # First a missing path (must re-prompt), then empty to bail out without running.
+    stub.ask.side_effect = [missing, ""]
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=stub
+    ):
+        code = _run_main_no_path()
+    out = capsys.readouterr().out
+    assert code == 0
+    assert stub.ask.call_count == 2  # re-prompted after the missing path
+    # The missing path must NOT reach discovery (which would say "No video files found.").
+    assert "No video files found." not in out
+    assert "Discovery" not in out
+
+
+def test_no_path_tty_empty_path_exits_zero_without_cancelled(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Submitting an empty path bails out with exit 0 and does NOT print 'Cancelled.'."""
+    stub = MagicMock()
+    stub.ask.return_value = ""
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=stub
+    ):
+        code = _run_main_no_path()
+    out = capsys.readouterr().out
+    assert code == 0
+    assert stub.ask.call_count == 1  # the scan-path prompt was shown
+    assert "usage:" not in out.lower()  # not the legacy help path
+    assert "Cancelled." not in out  # empty submit is not the cancel signal
+    assert "Discovery" not in out  # pipeline not entered
+
+
+def test_no_path_tty_cancel_prints_cancelled_and_exits_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ctrl-C / Esc cancel (questionary returns None) prints 'Cancelled.', exits 0, no traceback."""
+    stub = MagicMock()
+    stub.ask.return_value = None  # questionary returns None on Ctrl-C / Esc
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=stub
+    ):
+        code = _run_main_no_path()  # SystemExit captured here => no traceback escapes
+    out = capsys.readouterr().out
+    assert code == 0
+    assert stub.ask.call_count == 1
+    assert "usage:" not in out.lower()
+    assert "Cancelled." in out
+    assert "Discovery" not in out  # pipeline not entered
+
+
 def test_cli_dry_run_empty_dir(tmp_path: Path) -> None:
     """Running with --dry-run on dir with no videos exits 0 (no renames)."""
     orig_argv = sys.argv
