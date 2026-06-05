@@ -175,9 +175,11 @@ def test_no_path_tty_valid_path_enters_pipeline(
     """A valid scan path from the TTY prompt is accepted and the normal pipeline runs."""
     stub = MagicMock()
     stub.ask.return_value = str(tmp_path)  # existing (empty) directory
+    checkbox_stub = MagicMock()
+    checkbox_stub.ask.return_value = ["dry_run"]
     with patch("sys.stdin.isatty", return_value=True), patch(
         "questionary.path", return_value=stub
-    ):
+    ), patch("questionary.checkbox", return_value=checkbox_stub):
         code = _run_main_no_path()
     out = capsys.readouterr().out
     assert code == 0
@@ -242,6 +244,542 @@ def test_no_path_tty_cancel_prints_cancelled_and_exits_zero(
     assert "usage:" not in out.lower()
     assert "Cancelled." in out
     assert "Discovery" not in out  # pipeline not entered
+
+
+# --- Interactive start: options checklist (Issue #8) -------------------------
+#
+# Tracer bullet: after the scan-path prompt collects a valid path, the interactive
+# start must present a single options checklist via ``questionary.checkbox`` before
+# the pipeline runs. This first test asserts only that the checklist *appears* once,
+# through the public ``main()`` entry point, mirroring the issue-#7 seam (patch
+# ``sys.stdin.isatty`` + the relevant ``questionary`` call). Default-state, the
+# plex/folder invariant, and selection->flag mapping are separate later behaviors.
+
+
+def test_no_path_tty_shows_options_checklist_after_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """After a valid scan path is entered, the options checklist is presented once."""
+    path_stub = MagicMock()
+    path_stub.ask.return_value = str(tmp_path)  # existing (empty) directory
+    checkbox_stub = MagicMock()
+    # questionary.checkbox(...).ask() returns the list of selected option values.
+    checkbox_stub.ask.return_value = ["dry_run"]
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=path_stub
+    ), patch("questionary.checkbox", return_value=checkbox_stub):
+        code = _run_main_no_path()
+    assert code == 0
+    assert path_stub.ask.call_count == 1  # scan path collected first
+    # The options checklist is shown exactly once, after the scan path.
+    assert checkbox_stub.ask.call_count == 1
+
+
+def test_no_path_tty_checklist_cancel_prints_cancelled_and_exits_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ctrl-C / Esc on the options checklist cancels cleanly: exit 0, 'Cancelled.', no pipeline.
+
+    Mirrors the scan-path cancel test (test_no_path_tty_cancel_prints_cancelled_and_exits_zero):
+    questionary returns ``None`` on Ctrl-C / Esc. Here the scan path is collected successfully,
+    then ``questionary.checkbox(...).ask()`` returns ``None`` — the checklist cancel. The run
+    must exit 0, print a short ``Cancelled.`` line, and NOT enter the pipeline (no ``Discovery``),
+    with no traceback escaping (SystemExit is captured by the helper).
+    """
+    path_stub = MagicMock()
+    path_stub.ask.return_value = str(tmp_path)  # valid path => checklist is reached
+    checkbox_stub = MagicMock()
+    checkbox_stub.ask.return_value = None  # Ctrl-C / Esc on the checklist
+
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=path_stub
+    ), patch("questionary.checkbox", return_value=checkbox_stub):
+        code = _run_main_no_path()  # SystemExit captured here => no traceback escapes
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert path_stub.ask.call_count == 1  # scan path collected first
+    assert checkbox_stub.ask.call_count == 1  # checklist shown, then cancelled
+    assert "Cancelled." in out
+    assert "Discovery" not in out  # pipeline not entered after checklist cancel
+
+
+def test_no_path_tty_checklist_shows_dry_run_default_notice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Interactive start shows a visible notice that dry-run is on by default.
+
+    Issue #8 and docs/internal/modules/cli.md §7 require, alongside the pre-checked dry-run
+    option, "a visible notice that dry-run is on by default and nothing is renamed until it is
+    turned off." No exact wording is mandated, so this asserts the documented phrase
+    "dry-run is on by default" (case-insensitive) as the smallest stable substring. This notice
+    is part of interactive start (shown around the checklist) and is distinct from the later
+    runtime ``Dry run; no files changed.`` message — ``discover`` returns no groups so the run
+    exits 0 before any planning/apply output.
+    """
+    path_stub = MagicMock()
+    path_stub.ask.return_value = str(tmp_path)
+    checkbox_stub = MagicMock()
+    checkbox_stub.ask.return_value = ["dry_run"]
+
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=path_stub
+    ), patch("questionary.checkbox", return_value=checkbox_stub), patch(
+        "anipyrenamer.cli.discover", return_value=[]
+    ):
+        code = _run_main_no_path()
+
+    out = capsys.readouterr().out
+    assert code == 0
+    # The default-on notice is shown during interactive start (before any planning output).
+    assert "dry-run is on by default" in out.lower()
+
+
+def test_no_path_tty_checklist_validate_rejects_plex_without_folder(
+    tmp_path: Path,
+) -> None:
+    """The checklist passes a validate callback that forbids Plex-on/Folder-off submission.
+
+    Plex-without-folder is the impossible state (issue #8). questionary.checkbox accepts a
+    ``validate(selected) -> bool | str`` callback; returning a non-True string rejects the
+    submission and re-prompts. This test inspects the validate kwarg passed at the
+    questionary.checkbox seam and exercises it directly:
+      * ["plex"]            -> rejected (validate returns a non-empty error string)
+      * ["plex", "folder"]  -> accepted (True)
+      * ["dry_run"], []     -> accepted (True)
+    ``discover`` returns no groups so main() exits 0 right after the prompts.
+    """
+    path_stub = MagicMock()
+    path_stub.ask.return_value = str(tmp_path)
+    checkbox_stub = MagicMock()
+    checkbox_stub.ask.return_value = ["dry_run"]
+
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=path_stub
+    ), patch("questionary.checkbox", return_value=checkbox_stub) as checkbox_mock, patch(
+        "anipyrenamer.cli.discover", return_value=[]
+    ):
+        code = _run_main_no_path()
+
+    assert code == 0
+    checkbox_mock.assert_called_once()
+    validate = checkbox_mock.call_args.kwargs["validate"]
+
+    # Impossible state is rejected with a human-readable reason.
+    plex_only = validate(["plex"])
+    assert plex_only is not True
+    assert isinstance(plex_only, str) and plex_only
+
+    # Valid combinations are accepted.
+    assert validate(["plex", "folder"]) is True
+    assert validate(["dry_run"]) is True
+    assert validate([]) is True
+
+
+def test_no_path_tty_checklist_item_shape_and_default_state(
+    tmp_path: Path,
+) -> None:
+    """The options checklist is built with the intended values, default-check, and Plex nesting.
+
+    Locks the checklist item shape at the ``questionary.checkbox`` seam (only ``checkbox`` is
+    patched; the real ``questionary.Choice`` objects are constructed and inspected):
+      * exactly four options with values dry_run, folder, plex, offline (in that order),
+      * ``dry_run`` is checked by default,
+      * the Plex option's displayed label is visually nested (indented) under folder, while
+        ``folder`` is not indented.
+    ``discover`` returns no groups so ``main()`` exits 0 right after the prompts without
+    needing the AniDB/plan machinery.
+    """
+    path_stub = MagicMock()
+    path_stub.ask.return_value = str(tmp_path)
+    checkbox_stub = MagicMock()
+    checkbox_stub.ask.return_value = ["dry_run"]
+
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=path_stub
+    ), patch("questionary.checkbox", return_value=checkbox_stub) as checkbox_mock, patch(
+        "anipyrenamer.cli.discover", return_value=[]
+    ):
+        code = _run_main_no_path()
+
+    assert code == 0
+    checkbox_mock.assert_called_once()
+    choices = checkbox_mock.call_args.kwargs["choices"]
+    by_value = {c.value: c for c in choices}
+
+    # Exactly the four intended option values, in order.
+    assert [c.value for c in choices] == ["dry_run", "folder", "plex", "offline"]
+    # Dry-run is pre-checked by default.
+    assert by_value["dry_run"].checked is True
+    # Plex is visually nested under folder: indented label vs. non-indented folder label.
+    assert by_value["plex"].title.startswith(" ")
+    assert not by_value["folder"].title.startswith(" ")
+
+
+def test_no_path_tty_checklist_folder_selection_enables_folder_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Selecting 'folder' in the interactive checklist drives the pipeline in folder-rename mode.
+
+    Observable seam: ``build_plan`` is the single place where folder mode surfaces — it is
+    called with a non-None ``folder_template`` only when folder renaming is on. Here the
+    operator picks ``folder`` from the checklist, so the resolved selections must turn folder
+    mode on and ``build_plan`` must receive a folder template. A SKIP plan item keeps the run
+    on the no-renames-to-apply exit (code 0) without touching the apply confirmation seam.
+    """
+    import anipyrenamer.cli as cli_module
+
+    # Keep AniDB out of the loop: no env creds, no .env load => client stays None (cache only).
+    monkeypatch.setattr(cli_module, "_load_env", lambda: None)
+    monkeypatch.delenv("ANIDB_USERNAME", raising=False)
+    monkeypatch.delenv("ANIDB_PASSWORD", raising=False)
+
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
+
+    path_stub = MagicMock()
+    path_stub.ask.return_value = str(tmp_path)
+    checkbox_stub = MagicMock()
+    # Operator keeps dry-run on and additionally selects folder renaming.
+    checkbox_stub.ask.return_value = ["dry_run", "folder"]
+
+    captured: dict[str, object] = {}
+
+    def _capture_build_plan(
+        group: object,
+        info_arg: object,
+        template: str,
+        dest: object = None,
+        folder_template: str | None = None,
+    ) -> list[RenameItem]:
+        captured["folder_template"] = folder_template
+        return [
+            RenameItem(
+                old_path=str(tmp_path / "a.mkv"),
+                new_path="(skip)",
+                kind=RenameKind.SKIP,
+                anime_type="",
+            )
+        ]
+
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=path_stub
+    ), patch("questionary.checkbox", return_value=checkbox_stub), patch(
+        "anipyrenamer.cli.discover", return_value=groups
+    ), patch("anipyrenamer.cli.get_file_size", return_value=10), patch(
+        "anipyrenamer.cli.compute_ed2k", return_value="A" * 32
+    ), patch("anipyrenamer.cli.get_file_info", return_value=info), patch(
+        "anipyrenamer.cli.build_plan", side_effect=_capture_build_plan
+    ):
+        code = _run_main_no_path()
+
+    assert code == 0
+    assert checkbox_stub.ask.call_count == 1
+    # Folder mode selected => build_plan must receive a folder template (not None).
+    assert captured.get("folder_template") is not None
+
+
+def test_no_path_tty_checklist_plex_selection_enables_plex_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Selecting 'plex' in the interactive checklist runs the pipeline in Plex mode.
+
+    Observable seam: ``--plex`` makes the pipeline pass ``build_plan`` a folder template
+    carrying the Plex/HAMA AniDB tag ``[anidb-%aid%]`` (via ``_apply_plex_suffix``) — the
+    plex-specific marker, distinct from plain folder mode. The operator picks ``plex`` from the
+    checklist, so the resolved selections must turn Plex mode on and ``build_plan`` must receive
+    that tagged folder template. A SKIP plan item routes the run to the no-renames exit (code 0).
+    """
+    import anipyrenamer.cli as cli_module
+
+    # Keep AniDB out of the loop: no env creds, no .env load => client stays None (cache only).
+    monkeypatch.setattr(cli_module, "_load_env", lambda: None)
+    monkeypatch.delenv("ANIDB_USERNAME", raising=False)
+    monkeypatch.delenv("ANIDB_PASSWORD", raising=False)
+
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
+
+    path_stub = MagicMock()
+    path_stub.ask.return_value = str(tmp_path)
+    checkbox_stub = MagicMock()
+    checkbox_stub.ask.return_value = ["dry_run", "plex"]
+
+    captured: dict[str, object] = {}
+
+    def _capture_build_plan(
+        group: object,
+        info_arg: object,
+        template: str,
+        dest: object = None,
+        folder_template: str | None = None,
+    ) -> list[RenameItem]:
+        captured["folder_template"] = folder_template
+        return [
+            RenameItem(
+                old_path=str(tmp_path / "a.mkv"),
+                new_path="(skip)",
+                kind=RenameKind.SKIP,
+                anime_type="",
+            )
+        ]
+
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=path_stub
+    ), patch("questionary.checkbox", return_value=checkbox_stub), patch(
+        "anipyrenamer.cli.discover", return_value=groups
+    ), patch("anipyrenamer.cli.get_file_size", return_value=10), patch(
+        "anipyrenamer.cli.compute_ed2k", return_value="A" * 32
+    ), patch("anipyrenamer.cli.get_file_info", return_value=info), patch(
+        "anipyrenamer.cli.build_plan", side_effect=_capture_build_plan
+    ):
+        code = _run_main_no_path()
+
+    assert code == 0
+    folder_template = captured.get("folder_template")
+    # plex selected => build_plan receives a folder template carrying the Plex AniDB tag.
+    assert folder_template is not None
+    assert "[anidb-%aid%]" in folder_template
+
+
+def test_no_path_tty_checklist_offline_selection_enables_offline_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Selecting 'offline' in the interactive checklist runs the pipeline in offline mode.
+
+    Observable seam: the AniDB client is resolved only inside ``if not args.offline:``
+    (cli.py). With no credentials in the environment, that block prints the cache-only
+    fallback notice ``ANIDB_USERNAME/ANIDB_PASSWORD not set; using cache only.`` — a line that
+    is emitted *only when offline is off*. Selecting ``offline`` must skip the whole block,
+    exactly as ``--offline`` would, so that notice must be absent. A SKIP plan item routes the
+    run to the no-renames exit (code 0).
+    """
+    import anipyrenamer.cli as cli_module
+
+    # No creds + no .env load: without offline, the block would print the cache-only notice.
+    monkeypatch.setattr(cli_module, "_load_env", lambda: None)
+    monkeypatch.delenv("ANIDB_USERNAME", raising=False)
+    monkeypatch.delenv("ANIDB_PASSWORD", raising=False)
+
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
+
+    path_stub = MagicMock()
+    path_stub.ask.return_value = str(tmp_path)
+    checkbox_stub = MagicMock()
+    checkbox_stub.ask.return_value = ["offline"]
+
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=path_stub
+    ), patch("questionary.checkbox", return_value=checkbox_stub), patch(
+        "anipyrenamer.cli.discover", return_value=groups
+    ), patch("anipyrenamer.cli.get_file_size", return_value=10), patch(
+        "anipyrenamer.cli.compute_ed2k", return_value="A" * 32
+    ), patch("anipyrenamer.cli.get_file_info", return_value=info), patch(
+        "anipyrenamer.cli.build_plan",
+        return_value=[
+            RenameItem(
+                old_path=str(tmp_path / "a.mkv"),
+                new_path="(skip)",
+                kind=RenameKind.SKIP,
+                anime_type="",
+            )
+        ],
+    ):
+        code = _run_main_no_path()
+
+    out = capsys.readouterr().out
+    assert code == 0
+    # offline selected => AniDB resolution skipped; the not-offline cache-only notice is absent.
+    assert "ANIDB_USERNAME/ANIDB_PASSWORD not set; using cache only." not in out
+
+
+def test_no_path_tty_checklist_dry_run_selection_enables_dry_run_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Selecting 'dry_run' in the interactive checklist runs the pipeline in dry-run mode.
+
+    Observable seam: with at least one FILE item planned, dry-run mode prints
+    ``Dry run; no files changed.`` and exits before the apply confirmation / ``apply_plan``
+    (cli.py). The operator picks only ``dry_run`` from the checklist, so the run must behave
+    exactly as ``--dry-run`` would: the dry-run message appears and apply is never reached.
+    ``_prompt_confirmation`` (forced to abort) and ``apply_plan`` are patched purely as
+    deterministic, no-filesystem safety nets for the (currently unmapped) non-dry-run path.
+    """
+    import anipyrenamer.cli as cli_module
+
+    # Keep AniDB out of the loop: no env creds, no .env load => client stays None (cache only).
+    monkeypatch.setattr(cli_module, "_load_env", lambda: None)
+    monkeypatch.delenv("ANIDB_USERNAME", raising=False)
+    monkeypatch.delenv("ANIDB_PASSWORD", raising=False)
+
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
+
+    path_stub = MagicMock()
+    path_stub.ask.return_value = str(tmp_path)
+    checkbox_stub = MagicMock()
+    checkbox_stub.ask.return_value = ["dry_run"]
+
+    with patch("sys.stdin.isatty", return_value=True), patch(
+        "questionary.path", return_value=path_stub
+    ), patch("questionary.checkbox", return_value=checkbox_stub), patch(
+        "anipyrenamer.cli.discover", return_value=groups
+    ), patch("anipyrenamer.cli.get_file_size", return_value=10), patch(
+        "anipyrenamer.cli.compute_ed2k", return_value="A" * 32
+    ), patch("anipyrenamer.cli.get_file_info", return_value=info), patch(
+        "anipyrenamer.cli.build_plan",
+        return_value=[
+            RenameItem(
+                old_path=str(tmp_path / "a.mkv"),
+                new_path=str(tmp_path / "out.mkv"),
+                kind=RenameKind.FILE,
+            )
+        ],
+    ), patch("anipyrenamer.cli._prompt_confirmation", return_value="n"), patch(
+        "anipyrenamer.cli.apply_plan", return_value=(0, 0)
+    ) as apply_mock:
+        code = _run_main_no_path()
+
+    out = capsys.readouterr().out
+    assert code == 0
+    # dry_run selected => dry-run behavior: message printed, apply never reached.
+    assert "Dry run; no files changed." in out
+    apply_mock.assert_not_called()
+
+
+def test_cli_flag_folder_preserved_when_interactive_collects_only_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit ``--folder`` CLI flag survives interactive start (path-only collection).
+
+    When the operator runs ``anipyrenamer --folder`` with no positional path, interactive
+    start fires only to collect the missing scan path. The checklist mapping must not erase a
+    flag the user already supplied on the command line: even if ``folder`` is not in the
+    checklist result, folder mode stays on. Observable seam: ``build_plan`` still receives a
+    non-None ``folder_template``. A SKIP plan item routes the run to the no-renames exit
+    (code 0) without touching the apply confirmation seam.
+    """
+    import anipyrenamer.cli as cli_module
+
+    # Keep AniDB out of the loop: no env creds, no .env load => client stays None (cache only).
+    monkeypatch.setattr(cli_module, "_load_env", lambda: None)
+    monkeypatch.delenv("ANIDB_USERNAME", raising=False)
+    monkeypatch.delenv("ANIDB_PASSWORD", raising=False)
+
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
+
+    path_stub = MagicMock()
+    path_stub.ask.return_value = str(tmp_path)
+    checkbox_stub = MagicMock()
+    # Operator did NOT pick folder in the checklist; it was supplied via --folder on the CLI.
+    checkbox_stub.ask.return_value = ["dry_run"]
+
+    captured: dict[str, object] = {}
+
+    def _capture_build_plan(
+        group: object,
+        info_arg: object,
+        template: str,
+        dest: object = None,
+        folder_template: str | None = None,
+    ) -> list[RenameItem]:
+        captured["folder_template"] = folder_template
+        return [
+            RenameItem(
+                old_path=str(tmp_path / "a.mkv"),
+                new_path="(skip)",
+                kind=RenameKind.SKIP,
+                anime_type="",
+            )
+        ]
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "--folder"]
+        with patch("sys.stdin.isatty", return_value=True), patch(
+            "questionary.path", return_value=path_stub
+        ), patch("questionary.checkbox", return_value=checkbox_stub), patch(
+            "anipyrenamer.cli.discover", return_value=groups
+        ), patch("anipyrenamer.cli.get_file_size", return_value=10), patch(
+            "anipyrenamer.cli.compute_ed2k", return_value="A" * 32
+        ), patch("anipyrenamer.cli.get_file_info", return_value=info), patch(
+            "anipyrenamer.cli.build_plan", side_effect=_capture_build_plan
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+    finally:
+        sys.argv = orig_argv
+
+    # --folder supplied on the CLI must not be erased by the checklist mapping.
+    assert captured.get("folder_template") is not None
 
 
 def test_cli_dry_run_empty_dir(tmp_path: Path) -> None:

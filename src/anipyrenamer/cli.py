@@ -411,6 +411,38 @@ def main() -> None:
         scan_path = _interactive_scan_path(console)
         if scan_path is None:
             sys.exit(0)
+        import questionary
+
+        console.print(
+            "[dim]Dry-run is on by default — nothing is renamed until you turn it off.[/dim]"
+        )
+        def _validate_options(values: list[str]) -> bool | str:
+            # Plex implies Folder: the Plex-on / Folder-off combination cannot be submitted.
+            if "plex" in values and "folder" not in values:
+                return "Plex / HAMA folder tags require 'Rename series folders'."
+            return True
+
+        # questionary is untyped (.ask() -> Any); annotate to keep the seam typed.
+        _selected_options: list[str] | None = questionary.checkbox(
+            "Options:",
+            choices=[
+                questionary.Choice("Dry run (preview only)", value="dry_run", checked=True),
+                questionary.Choice("Rename series folders", value="folder"),
+                questionary.Choice("  Plex / HAMA folder tags", value="plex"),
+                questionary.Choice("Offline (cache only)", value="offline"),
+            ],
+            validate=_validate_options,
+        ).ask()
+        # questionary returns None on Ctrl-C / Esc (distinct from [] = nothing selected).
+        if _selected_options is None:
+            console.print("Cancelled.")
+            sys.exit(0)
+        selected = _selected_options
+        # Augment, never erase: a flag already supplied on the CLI stays on.
+        args.dry_run = args.dry_run or "dry_run" in selected
+        args.folder = args.folder or "folder" in selected
+        args.plex = args.plex or "plex" in selected
+        args.offline = args.offline or "offline" in selected
         args.paths = [scan_path]
 
     db_path = get_db_path(args.db)
