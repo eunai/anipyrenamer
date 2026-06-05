@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-04
+
 ### Added
 
 - CLI: interactive start now offers an options checklist. Running `anipyrenamer` without a path in a terminal shows the scan-path prompt and then a multi-select of beginner-friendly options: Preview only (`--dry-run`, checked by default, with a notice that nothing is renamed until you turn it off), Rename series folders (`--folder`) with Plex / HAMA tags (`--plex`) nested beneath it, and Offline — cache only (`--offline`). Confirming Plex without Folder is rejected so the unsupported combination cannot run; the selections drive the same behavior as the equivalent flags, and Ctrl-C / Esc cancels cleanly with exit code `0`.

@@ -3,7 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/anipyrenamer)](https://pypi.org/project/anipyrenamer/)
 [![Python versions](https://img.shields.io/pypi/pyversions/anipyrenamer)](https://pypi.org/project/anipyrenamer/)
 
-**Current release:** 1.1.1 — published on [PyPI](https://pypi.org/project/anipyrenamer/) and tagged on [GitHub](https://github.com/eunai/anipyrenamer/releases).
+**Current release:** 1.2.0 — published on [PyPI](https://pypi.org/project/anipyrenamer/) and tagged on [GitHub](https://github.com/eunai/anipyrenamer/releases).
 
 `anipyrenamer` is a command-line tool that renames anime files using ED2K hash lookups from AniDB, with local SQLite caching for faster reruns and offline support.
 
