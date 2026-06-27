@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Changed
+
+- The `--mylist` wizard is now explicit and safer: it no longer asks the redundant "update MyList?" prompt, prompts are `(Y/n)` (no "yes to all"), and the storage menu is 0-indexed where the number you type is the AniDB MyList state code (`0` Unknown/None, `1` Internal, `2` External, `3` Deleted, `4` Remote, `5` Exit). Choosing a storage option now saves only the state code; no free-text storage name is sent. With no AniDB session, MyList is skipped immediately. The rename-apply confirmation is unchanged.
+
+### Removed
+
+- The `a` ("yes to all") answer is no longer accepted in the `--mylist` wizard; the final "Apply MyList updates?" prompt is the only confirmation that writes to AniDB.
 
 ## [1.1.0] - 2026-05-07
 

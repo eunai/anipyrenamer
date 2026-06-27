@@ -180,6 +180,33 @@ def _prompt_confirmation(message: str) -> str:
         print("Please enter Y, n, or a.")
 
 
+def _prompt_yes_no(message: str) -> str:
+    """
+    MyList-scoped confirmation prompt: (Y/n).
+
+    Unlike :func:`_prompt_confirmation`, this prompt has no "yes to all" answer:
+    every MyList confirmation is an independent yes/no, so ``a`` (and any other
+    input) is rejected and re-prompts.
+
+    Returns:
+        "y" -> yes (including Enter default)
+        "n" -> no
+    """
+    while True:
+        try:
+            raw = input(f"{message} (Y/n): ").strip().lower()
+        except EOFError:
+            return "y"
+
+        if raw == "":
+            return "y"
+        if raw in ("y", "yes"):
+            return "y"
+        if raw == "n":
+            return "n"
+        print("Please enter Y or n.")
+
+
 def _normalized_dest_key(path_str: str, *, case_insensitive: bool) -> str:
     p = Path(path_str)
     try:
@@ -810,7 +837,7 @@ def _run_mylist_if_requested(
         console=console,
         client=client,
         file_infos=resolved_infos,
-        confirm=_prompt_confirmation,
+        confirm=_prompt_yes_no,
     )
     if mylist_result.attempted and mylist_result.failed > 0 and exit_code == 0:
         return EXIT_PARTIAL

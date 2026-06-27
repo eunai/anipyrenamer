@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import anipyrenamer.cli as cli
 from anipyrenamer.cli import (
     EXIT_INTERRUPTED,
     _apply_plex_suffix,
@@ -396,6 +397,33 @@ def test_prompt_confirmation_reprompts_on_invalid(monkeypatch: pytest.MonkeyPatc
     assert _prompt_confirmation("Apply these renames?") == "n"
 
 
+def test_prompt_yes_no_enter_defaults_to_yes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MyList-scoped (Y/n) confirm: Enter defaults to yes."""
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    assert cli._prompt_yes_no("Would you like to set storage?") == "y"
+
+
+def test_prompt_yes_no_accepts_yes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MyList-scoped (Y/n) confirm: 'y' and 'yes' both mean yes."""
+    replies = iter(["y", "yes"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(replies))
+    assert cli._prompt_yes_no("Would you like to set storage?") == "y"
+    assert cli._prompt_yes_no("Would you like to set storage?") == "y"
+
+
+def test_prompt_yes_no_accepts_no(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MyList-scoped (Y/n) confirm: 'n' means no."""
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    assert cli._prompt_yes_no("Would you like to set storage?") == "n"
+
+
+def test_prompt_yes_no_rejects_a_and_reprompts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MyList-scoped (Y/n) confirm does NOT accept 'a' (yes-to-all); it re-prompts."""
+    replies = iter(["a", "n"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(replies))
+    assert cli._prompt_yes_no("Would you like to set storage?") == "n"
+
+
 def test_cli_mylist_invokes_wizard_on_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
     info = FileInfo(
         fid=123,
@@ -441,6 +469,116 @@ def test_cli_mylist_invokes_wizard_on_dry_run(monkeypatch: pytest.MonkeyPatch) -
                 main()
             assert exc_info.value.code == 0
         assert called["value"] is True
+    finally:
+        sys.argv = orig_argv
+
+
+def test_mylist_cli_passes_yes_no_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The --mylist path wires the MyList-scoped _prompt_yes_no, not the (Y/n/a) confirm.
+
+    Without this guard, the helper + wizard tests can all pass while the real call
+    site keeps the unsafe (Y/n/a) confirm with its yes-to-all 'a'.
+    """
+    info = FileInfo(
+        fid=123,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path="/in/a.mkv", sidecar_paths=())]
+    captured: dict[str, object] = {}
+
+    class _Result:
+        attempted = False
+        failed = 0
+
+    def _fake_wizard(*, console, client, file_infos, confirm):  # noqa: ANN001, ARG001
+        captured["confirm"] = confirm
+        return _Result()
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "/in", "--dry-run", "--offline", "--mylist"]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
+            ),
+            patch("anipyrenamer.cli.run_mylist_wizard", side_effect=_fake_wizard),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+        assert captured["confirm"] is cli._prompt_yes_no
+        assert captured["confirm"] is not cli._prompt_confirmation
+    finally:
+        sys.argv = orig_argv
+
+
+def test_rename_apply_keeps_yna_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AC #14 (symmetric guard): rename-apply still uses _prompt_confirmation (Y/n/a).
+
+    The apply-renames call site keeps the shared (Y/n/a) confirm and still treats
+    'a' as apply, so the MyList change does not ripple into the rename flow.
+    """
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path="/in/a.mkv", sidecar_paths=())]
+    confirm_messages: list[str] = []
+
+    def _fake_confirm(message: str) -> str:
+        confirm_messages.append(message)
+        return "a"
+
+    apply_called = {"value": False}
+
+    def _fake_apply_plan(items, db_path, *, dry_run, progress_callback):  # noqa: ANN001, ARG001
+        apply_called["value"] = True
+        return (1, 0)
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "/in", "--offline"]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
+            ),
+            patch("anipyrenamer.cli._prompt_confirmation", _fake_confirm),
+            patch("anipyrenamer.cli.apply_plan", _fake_apply_plan),
+        ):
+            with pytest.raises(SystemExit):
+                main()
+        assert confirm_messages == ["Apply these renames?"]
+        assert apply_called["value"] is True
     finally:
         sys.argv = orig_argv
 

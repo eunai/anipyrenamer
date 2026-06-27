@@ -17,12 +17,16 @@ ConfirmFn = Callable[[str], str]
 ItemProgressPhase = Literal["start", "end"]
 ItemProgressFn = Callable[[int, int, ItemProgressPhase], None]
 
+# 0-indexed storage menu: the typed key equals the AniDB MyList state code (R4).
+# Labels are cosmetic and decoupled from the state code. The menu lines and the
+# Exit key in `_select_storage` are rendered from this single dict so the
+# displayed numbers can never drift from the state codes.
 MYLIST_STORAGE_CHOICES: dict[str, tuple[int, str]] = {
-    "1": (0, "Unknown"),
-    "2": (1, "Internal HDD"),
-    "3": (2, "External CD/DVD"),
-    "4": (3, "Deleted"),
-    "5": (4, "Remote"),
+    "0": (0, "Unknown/None"),
+    "1": (1, "Internal"),
+    "2": (2, "External"),
+    "3": (3, "Deleted"),
+    "4": (4, "Remote"),
 }
 
 
@@ -38,24 +42,30 @@ class MyListRunResult:
 
 
 def _select_storage(console: Console) -> tuple[int | None, str | None, bool]:
-    """Prompt for storage selection. Returns (state, label, aborted)."""
+    """Prompt for storage selection. Returns (state, label, aborted).
+
+    The menu is 0-indexed and the typed key equals the AniDB MyList state code.
+    Menu lines and the Exit key are rendered from ``MYLIST_STORAGE_CHOICES`` so
+    the displayed numbers can never drift from the state codes.
+    """
+    states = [state for state, _label in MYLIST_STORAGE_CHOICES.values()]
+    lowest_key = str(min(states))
+    exit_key = str(max(states) + 1)
+
     console.print("Choose storage:")
-    console.print("  1) Unknown")
-    console.print("  2) Internal HDD")
-    console.print("  3) External CD/DVD")
-    console.print("  4) Deleted")
-    console.print("  5) Remote")
-    console.print("  6) Exit")
+    for key, (_state, label) in MYLIST_STORAGE_CHOICES.items():
+        console.print(f"  {key}) {label}")
+    console.print(f"  {exit_key}) Exit")
 
     while True:
-        raw = input("Storage option (1-6): ").strip()
-        if raw == "6":
+        raw = input(f"Storage option ({lowest_key}-{exit_key}): ").strip()
+        if raw == exit_key:
             return (None, None, True)
         choice = MYLIST_STORAGE_CHOICES.get(raw)
         if choice is not None:
             state, label = choice
             return (state, label, False)
-        console.print("[yellow]Invalid option. Enter 1-6.[/yellow]")
+        console.print(f"[yellow]Invalid option. Enter {lowest_key}-{exit_key}.[/yellow]")
 
 
 def run_mylist_wizard(
@@ -78,34 +88,25 @@ def run_mylist_wizard(
         return result
     result.selected_files = len(entries)
 
-    update_reply = confirm("Would you like to update MyList?")
-    if update_reply == "n":
-        console.print("[dim]MyList update skipped by user.[/dim]")
-        return result
-    auto_yes_remaining = update_reply == "a"
-
+    # R6: fail fast. With no AniDB session there is nothing to apply, so skip
+    # immediately — before any prompt.
     if client is None:
         console.print("[yellow]MyList skipped: AniDB session is not available.[/yellow]")
         result.skipped = len(entries)
         return result
 
-    set_storage_reply = "y" if auto_yes_remaining else confirm("Would you like to set storage?")
-    auto_yes_remaining = auto_yes_remaining or set_storage_reply == "a"
+    # R2: every prompt is an independent yes/no — no answer auto-confirms a later
+    # prompt. Only an explicit "y" is affirmative.
     storage_state: int | None = None
     storage_label: str | None = None
-    if set_storage_reply in ("y", "a"):
+    if confirm("Would you like to set storage?") == "y":
         storage_state, storage_label, aborted = _select_storage(console)
         if aborted:
             console.print("[yellow]MyList wizard aborted at storage step.[/yellow]")
             return result
 
-    add_reply = "y" if auto_yes_remaining else confirm("Would you like to add file(s) to MyList?")
-    auto_yes_remaining = auto_yes_remaining or add_reply == "a"
-    add_to_mylist = add_reply in ("y", "a")
-
-    watched_reply = "y" if auto_yes_remaining else confirm("Would you like to mark as watched?")
-    auto_yes_remaining = auto_yes_remaining or watched_reply == "a"
-    mark_watched = watched_reply in ("y", "a")
+    add_to_mylist = confirm("Would you like to add file(s) to MyList?") == "y"
+    mark_watched = confirm("Would you like to mark as watched?") == "y"
 
     console.print("[bold]MyList summary[/bold]")
     console.print(f"- Files with AniDB fid: {len(entries)}")
@@ -113,8 +114,8 @@ def run_mylist_wizard(
     console.print(f"- Mark watched: {'yes' if mark_watched else 'no'}")
     console.print(f"- Storage: {storage_label if storage_label else 'unchanged'}")
 
-    apply_reply = "y" if auto_yes_remaining else confirm("Apply MyList updates?")
-    if apply_reply == "n":
+    # The final apply is the only gate that mutates AniDB; only an explicit "y" applies.
+    if confirm("Apply MyList updates?") != "y":
         console.print("[dim]MyList changes not applied.[/dim]")
         return result
 
@@ -164,11 +165,14 @@ def run_mylist_wizard(
                     description=f"MyList Updating {idx - 1}/{total}",
                 )
                 _refresh_live()
+            # R5: persist only the AniDB state code. Pass storage=None so the
+            # free-text storage= field is omitted; the label is UI copy only
+            # (shown in the summary above).
             ok, msg = client.mylist_add_or_update_by_fid(  # type: ignore[attr-defined]
                 info.fid,
                 add_to_mylist=add_to_mylist,
                 state=storage_state,
-                storage=storage_label,
+                storage=None,
                 viewed=mark_watched,
             )
             if ok:

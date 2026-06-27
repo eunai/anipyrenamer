@@ -62,7 +62,24 @@ Use `anipyrenamer --help` for all options.
 
 ### Confirmation prompts
 
-Interactive confirmations use `Prompt text (Y/n/a):` — `Y` (default), `n`, or `a` (yes to all remaining).
+The rename-apply confirmation uses `Prompt text (Y/n/a):` — `Y` (default), `n`, or `a` (yes to all remaining).
+
+The `--mylist` wizard uses `Prompt text (Y/n):` — `Y` (default) or `n`, with **no** "yes to all": every MyList prompt is an independent yes/no, and the final `Apply MyList updates?` prompt is the only confirmation that writes to your AniDB MyList.
+
+### MyList storage states
+
+When you run `--mylist` and choose to set storage, the menu is 0-indexed and the number you type **is** the AniDB MyList state code that gets saved:
+
+| Key | Meaning |
+|-----|---------|
+| `0` | Unknown/None |
+| `1` | Internal (on hdd) |
+| `2` | External (on cd/dvd) |
+| `3` | Deleted |
+| `4` | Remote (NAS/cloud) |
+| `5` | Exit (abort without writing) |
+
+Only the state code is written; no free-text storage name is sent. Verified on 2026.06.26 against the live AniDB MyList UI. Legacy AniDB clients that label `4` as "shared" or `5` as "release" are out of date — AniDB repurposed those codes after retiring P2P sharing.
 
 ## Platforms
 
