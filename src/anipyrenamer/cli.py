@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
@@ -61,8 +61,17 @@ def _get_well_known_env_path() -> Path | None:
 
 
 def _load_env() -> None:
-    """Load .env: project/package dir first (dev), then well-known path (global install). Later load does not override (override=False)."""
-    load_dotenv()
+    """Load ``.env``: walk **upward from process cwd**, then well-known config path.
+
+    Uses ``find_dotenv(usecwd=True)`` so discovery matches operator expectations when
+    running from an arbitrary folder (editable installs no longer implicitly pick up a
+    dev-repo ``.env`` via ``python-dotenv``'s default anchor). Loads do not override
+    already-set environment variables (override=False).
+    """
+    dotted_usecwd = find_dotenv(usecwd=True) or ""
+
+    if dotted_usecwd:
+        load_dotenv(dotted_usecwd)
     local_env = Path(".env")
     if local_env.exists():
         warn_if_world_readable(local_env)
