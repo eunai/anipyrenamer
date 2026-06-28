@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+
+- Windows: a folder path ending in a backslash (for example from PowerShell tab-completion) is no longer mis-read as empty — the stray shell quote is stripped so the folder is scanned. (#23)
 
 ## [2.0.0] - 2026-06-27
 

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
 
-from anipyrenamer.discovery import discover
+from anipyrenamer.discovery import _strip_trailing_windows_quote_artifact, discover
 
 
 def test_discover_empty_paths() -> None:
@@ -75,3 +77,45 @@ def test_discover_directory_two_levels_down(tmp_path: Path) -> None:
     assert str(tmp_path / "top.mkv") in paths
     assert str(sub / "nested.mkv") in paths
     assert str(sub2 / "ep07.mkv") in paths
+
+
+# --- _strip_trailing_windows_quote_artifact: pure rule, tested cross-platform ---
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('C:\\dir"', "C:\\dir"),  # PowerShell swallowed-slash form
+        ('C:\\dir\\"', "C:\\dir"),  # backslash-preserved-then-quote form
+        ('C:\\dir"""', "C:\\dir"),  # multiple trailing quotes
+        ('C:\\di"r"', 'C:\\di"r'),  # internal quote kept; only the trailing one stripped
+        ("C:\\dir\\", "C:\\dir"),  # existing trailing-separator trim preserved
+    ],
+)
+def test_strip_quote_artifact_windows(raw: str, expected: str) -> None:
+    assert _strip_trailing_windows_quote_artifact(raw, is_windows=True) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('/tmp/dir"', '/tmp/dir"'),  # POSIX: '"' is a legal filename char; not stripped
+        ("/tmp/dir/", "/tmp/dir"),  # POSIX: trailing separator still trimmed
+    ],
+)
+def test_strip_quote_artifact_posix(raw: str, expected: str) -> None:
+    assert _strip_trailing_windows_quote_artifact(raw, is_windows=False) == expected
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows-only PowerShell trailing-backslash path-arg quirk"
+)
+def test_discover_strips_windows_trailing_quote_artifact(tmp_path: Path) -> None:
+    """Regression for #23: a Windows directory arg arriving with the stray trailing quote
+    (PowerShell turns a quoted arg ending in a backslash into one ending in '"') still
+    discovers its videos instead of reporting none."""
+    (tmp_path / "ep01.mkv").write_bytes(b"x")
+    mangled = str(tmp_path) + '"'
+    groups = discover([mangled])
+    assert len(groups) == 1
+    assert groups[0].video_path == str(tmp_path / "ep01.mkv")

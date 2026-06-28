@@ -12,10 +12,29 @@ VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm", ".wmv", ".f
 SIDECAR_EXTENSIONS = {".ass", ".srt", ".ssa", ".sub", ".idx", ".nfo", ".sup"}
 
 
+def _strip_trailing_windows_quote_artifact(raw: str, *, is_windows: bool) -> str:
+    """Trim a CLI path argument's trailing characters.
+
+    Always strips surrounding whitespace and trailing path separators. On Windows,
+    also strips stray trailing double-quote characters: PowerShell/cmd turn a quoted
+    argument ending in a backslash into one ending in a double-quote (the backslash
+    escapes the closing quote), and the double-quote is illegal in a Windows path, so
+    a trailing one is always a shell artifact. POSIX is unchanged (a double-quote is a
+    legal POSIX filename character).
+    """
+    cleaned = raw.strip()
+    if is_windows:
+        cleaned = cleaned.rstrip('"')
+    cleaned = cleaned.rstrip("/\\")
+    if is_windows:
+        cleaned = cleaned.rstrip('"').rstrip("/\\")
+    return cleaned
+
+
 def _normalize_path(raw: str) -> Path:
-    """Resolve path; strip trailing slashes so directories with trailing sep resolve correctly."""
-    p = Path(raw.strip().rstrip("/\\"))
-    return p.resolve()
+    """Resolve a path arg; trim trailing separators (and, on Windows, a stray shell quote)."""
+    cleaned = _strip_trailing_windows_quote_artifact(raw, is_windows=(os.name == "nt"))
+    return Path(cleaned).resolve()
 
 
 def discover(paths: list[str]) -> list[DiscoveredGroup]:
