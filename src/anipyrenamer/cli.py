@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 import os
@@ -37,6 +36,7 @@ from anipyrenamer.cache import (
     get_file_info,
     set_file_info,
 )
+from anipyrenamer.conflicts import resolve_destination_conflicts
 from anipyrenamer.discovery import discover, get_file_size
 from anipyrenamer.ed2k import compute_ed2k
 from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKind
@@ -44,10 +44,7 @@ from anipyrenamer.mylist import run_mylist_wizard
 from anipyrenamer.naming import DEFAULT_FILE_TEMPLATE, DEFAULT_FOLDER_TEMPLATE
 from anipyrenamer.plan import build_plan
 from anipyrenamer.permissions import warn_if_world_readable
-from anipyrenamer.validation import (
-    analyze_destination_conflicts,
-    flatten_and_validate_folder_renames,
-)
+from anipyrenamer.validation import flatten_and_validate_folder_renames
 
 
 def _get_well_known_env_path() -> Path | None:
@@ -205,74 +202,6 @@ def _prompt_yes_no(message: str) -> str:
         if raw == "n":
             return "n"
         print("Please enter Y or n.")
-
-
-def _normalized_dest_key(path_str: str, *, case_insensitive: bool) -> str:
-    p = Path(path_str)
-    try:
-        key = p.resolve().as_posix() if p.exists() else p.as_posix()
-    except OSError:
-        key = p.as_posix()
-    return key.casefold() if case_insensitive else key
-
-
-def _is_same_existing_path(a: Path, b: Path) -> bool:
-    """True when both paths exist and resolve to the same filesystem entry."""
-    if not a.exists() or not b.exists():
-        return False
-    try:
-        return a.resolve() == b.resolve()
-    except OSError:
-        return False
-
-
-def _deduped_path(dst: Path, *, strategy: str, old_path: str, attempt: int) -> Path:
-    stem = dst.stem
-    suffix = dst.suffix
-    if strategy == "hash":
-        digest = hashlib.sha1(old_path.encode("utf-8")).hexdigest()[:8]
-        candidate_stem = f"{stem}-{digest}" if attempt == 1 else f"{stem}-{digest}-{attempt}"
-    elif strategy == "counter":
-        candidate_stem = f"{stem} ({attempt + 1})"
-    else:
-        candidate_stem = stem + "-dup" if attempt == 1 else f"{stem}-dup-{attempt}"
-    return dst.with_name(candidate_stem + suffix)
-
-
-def _apply_suffix_conflict_resolution(items: list[RenameItem], *, strategy: str) -> None:
-    # Path containment was already validated in build_plan(); _deduped_path uses
-    # Path.with_name() which only changes the final component, preserving the
-    # parent directory and therefore the containment guarantee (SEC-05 / P2-A).
-    case_insensitive = os.name == "nt"
-    reserved: set[str] = set()
-    for item in items:
-        if item.kind != RenameKind.FILE:
-            continue
-
-        src = Path(item.old_path)
-        dst = Path(item.new_path)
-        key = _normalized_dest_key(item.new_path, case_insensitive=case_insensitive)
-        exists_conflict = dst.exists() and not _is_same_existing_path(src, dst)
-        if not exists_conflict and key not in reserved:
-            reserved.add(key)
-            continue
-
-        resolved = False
-        for attempt in range(1, 256):
-            candidate = _deduped_path(
-                dst, strategy=strategy, old_path=item.old_path, attempt=attempt
-            )
-            candidate_key = _normalized_dest_key(str(candidate), case_insensitive=case_insensitive)
-            candidate_conflict = candidate.exists() and not _is_same_existing_path(src, candidate)
-            if candidate_conflict or candidate_key in reserved:
-                continue
-            item.new_path = str(candidate)
-            reserved.add(candidate_key)
-            resolved = True
-            break
-
-        if not resolved:
-            reserved.add(key)
 
 
 def main() -> None:
@@ -688,10 +617,12 @@ def _do_hashing_lookup_plan_apply(
         console.print("[yellow]No video files found.[/yellow]")
         sys.exit(0)
 
-    if args.on_conflict == "suffix":
-        _apply_suffix_conflict_resolution(flat_items, strategy=args.name_dedupe)
-
-    dest_conflicts, conflict_indexes = analyze_destination_conflicts(flat_items)
+    resolution = resolve_destination_conflicts(
+        flat_items, policy=args.on_conflict, strategy=args.name_dedupe
+    )
+    flat_items = resolution.plan
+    dest_conflicts = resolution.warnings
+    conflict_indexes = resolution.conflict_indexes
     warnings: list[str] = []
     for msg in folder_conflicts:
         warnings.append(f"[yellow]{msg}[/yellow]")
@@ -721,7 +652,7 @@ def _do_hashing_lookup_plan_apply(
     else:
         preview_plan(flat_items, console=console)
 
-    if conflict_indexes and args.on_conflict == "fail":
+    if resolution.should_fail:
         console.print("[red]Aborted due to destination conflicts (--on-conflict=fail).[/red]")
         sys.exit(1)
 
@@ -734,7 +665,7 @@ def _do_hashing_lookup_plan_apply(
         _LOG.info("phase=apply dry_run=yes file_operations=%d", file_items_count)
         console.print("[green]Dry run; no files changed.[/green]")
         plan_skips = sum(1 for i in flat_items if i.kind == RenameKind.SKIP)
-        exit_code = EXIT_PARTIAL if plan_skips > 0 or len(dest_conflicts) > 0 else 0
+        exit_code = EXIT_PARTIAL if plan_skips > 0 or conflict_indexes else 0
         sys.exit(
             _run_mylist_if_requested(
                 args=args,

@@ -2,15 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-
 from anipyrenamer.models import RenameItem, RenameKind
-from anipyrenamer.validation import (
-    analyze_destination_conflicts,
-    detect_destination_conflicts,
-    flatten_and_validate_folder_renames,
-)
+from anipyrenamer.validation import flatten_and_validate_folder_renames
 
 
 def test_flatten_and_validate_folder_renames_single_target_per_folder() -> None:
@@ -66,47 +59,3 @@ def test_flatten_and_validate_folder_renames_multiple_targets_conflict() -> None
     folder_items = [i for i in flat if i.kind == RenameKind.DIRECTORY]
     assert len(file_items) == 2
     assert len(folder_items) == 0
-
-
-def test_detect_destination_conflicts_none() -> None:
-    """No existing destinations -> no conflict messages."""
-    items = [
-        RenameItem("/a/x.mkv", "/b/y.mkv", kind=RenameKind.FILE),
-    ]
-    assert detect_destination_conflicts(items) == []
-
-
-def test_detect_destination_conflicts_existing_dest(tmp_path: Path) -> None:
-    """Existing destination (not same as source) is reported; apply will skip."""
-    existing = tmp_path / "existing.mkv"
-    existing.write_bytes(b"x")
-    items = [
-        RenameItem(str(tmp_path / "other.mkv"), str(existing), kind=RenameKind.FILE),
-    ]
-    conflicts = detect_destination_conflicts(items)
-    assert len(conflicts) == 1
-    assert "already exists" in conflicts[0]
-    assert "will skip" in conflicts[0]
-
-
-def test_detect_destination_conflicts_planned_same_target() -> None:
-    """Two planned outputs with same destination are reported as a collision."""
-    items = [
-        RenameItem("/a/one.mkv", "/dest/show-01.mkv", kind=RenameKind.FILE),
-        RenameItem("/a/two.mkv", "/dest/show-01.mkv", kind=RenameKind.FILE),
-    ]
-    conflicts = detect_destination_conflicts(items)
-    assert len(conflicts) == 1
-    assert "Planned destination collision" in conflicts[0]
-
-
-def test_analyze_destination_conflicts_case_only_collision() -> None:
-    """Case-only planned collision is detected on case-insensitive filesystems."""
-    items = [
-        RenameItem("/a/one.mkv", "/dest/Show-01.mkv", kind=RenameKind.FILE),
-        RenameItem("/a/two.mkv", "/dest/show-01.mkv", kind=RenameKind.FILE),
-    ]
-    conflicts, indexes = analyze_destination_conflicts(items, case_insensitive=True)
-    assert len(conflicts) == 1
-    assert "Planned destination collision" in conflicts[0]
-    assert indexes == {0, 1}

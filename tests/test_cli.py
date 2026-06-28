@@ -13,7 +13,6 @@ import anipyrenamer.cli as cli
 from anipyrenamer.cli import (
     EXIT_INTERRUPTED,
     _apply_plex_suffix,
-    _apply_suffix_conflict_resolution,
     _get_well_known_env_path,
     _hash_group,
     _prompt_confirmation,
@@ -357,28 +356,64 @@ def test_cli_dry_run_with_lookup_skip_exits_partial(monkeypatch: pytest.MonkeyPa
         sys.argv = orig_argv
 
 
-def test_apply_suffix_conflict_resolution_dedupes_planned_collisions() -> None:
-    """--on-conflict=suffix dedupes planned same-destination targets."""
-    items = [
-        RenameItem("/in/a.mkv", "/dest/same.mkv", kind=RenameKind.FILE),
-        RenameItem("/in/b.mkv", "/dest/same.mkv", kind=RenameKind.FILE),
-    ]
-    _apply_suffix_conflict_resolution(items, strategy="counter")
-    assert items[0].new_path == "/dest/same.mkv"
-    assert items[1].new_path.endswith("same (2).mkv")
-    assert items[0].new_path != items[1].new_path
+def test_cli_wires_conflict_policy_and_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--on-conflict / --name-dedupe flow into resolve_destination_conflicts.
 
+    Suffix/dedupe behavior itself is characterized in tests/test_conflicts.py; this
+    pins that the CLI passes the parsed flags through to the module seam.
+    """
+    info = FileInfo(
+        fid=1,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path="/in/a.mkv", sidecar_paths=())]
+    captured: dict[str, object] = {}
+    real = cli.resolve_destination_conflicts
 
-def test_apply_suffix_conflict_resolution_dedupes_existing_destination(tmp_path: Path) -> None:
-    """--on-conflict=suffix rewrites destination when target file already exists."""
-    src = tmp_path / "src.mkv"
-    src.write_bytes(b"src")
-    existing = tmp_path / "existing.mkv"
-    existing.write_bytes(b"existing")
-    item = RenameItem(str(src), str(existing), kind=RenameKind.FILE)
-    _apply_suffix_conflict_resolution([item], strategy="counter")
-    assert item.new_path != str(existing)
-    assert item.new_path.endswith("existing (2).mkv")
+    def _spy(plan, *, policy, strategy, case_insensitive=None):  # noqa: ANN001
+        captured["policy"] = policy
+        captured["strategy"] = strategy
+        return real(plan, policy=policy, strategy=strategy, case_insensitive=case_insensitive)
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = [
+            "anipyrenamer",
+            "/in",
+            "--dry-run",
+            "--offline",
+            "--on-conflict",
+            "suffix",
+            "--name-dedupe",
+            "hash",
+        ]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
+            ),
+            patch("anipyrenamer.cli.resolve_destination_conflicts", side_effect=_spy),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+        assert captured == {"policy": "suffix", "strategy": "hash"}
+    finally:
+        sys.argv = orig_argv
 
 
 def test_prompt_confirmation_enter_defaults_to_yes(monkeypatch: pytest.MonkeyPatch) -> None:
