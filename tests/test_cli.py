@@ -459,6 +459,39 @@ def test_prompt_yes_no_rejects_a_and_reprompts(monkeypatch: pytest.MonkeyPatch) 
     assert cli._prompt_yes_no("Would you like to set storage?") == "n"
 
 
+# --- Slice 2: characterize the literal confirmation-prompt FORMAT strings (SPEC.md §3).
+# The answer/rejection/wiring behaviors are covered above and by
+# test_mylist_cli_passes_yes_no_confirm; these capture the prompt text itself,
+# which the lambda-based tests ignore.
+
+
+def test_prompt_confirmation_uses_yna_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Characterization: the rename-apply confirm prompts with the (Y/n/a) format (SPEC.md §3)."""
+    seen: list[str] = []
+
+    def fake_input(prompt: str) -> str:
+        seen.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    _prompt_confirmation("Apply these renames?")
+    assert seen == ["Apply these renames? (Y/n/a): "]
+
+
+def test_prompt_yes_no_uses_yn_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Characterization: the MyList confirm prompts with (Y/n) and never (Y/n/a) (SPEC.md §3)."""
+    seen: list[str] = []
+
+    def fake_input(prompt: str) -> str:
+        seen.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    cli._prompt_yes_no("Would you like to set storage?")
+    assert seen == ["Would you like to set storage? (Y/n): "]
+    assert "(Y/n/a)" not in seen[0]
+
+
 def test_cli_mylist_invokes_wizard_on_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
     info = FileInfo(
         fid=123,
@@ -560,6 +593,122 @@ def test_mylist_cli_passes_yes_no_confirm(monkeypatch: pytest.MonkeyPatch) -> No
         assert captured["confirm"] is not cli._prompt_confirmation
     finally:
         sys.argv = orig_argv
+
+
+# --- Slice 5 (CLI orchestration): FILE 506 -> re-login + bounded single retry (SPEC.md §6) ---
+
+
+class _RetryClient:
+    """Fake AniDB client scripting file_lookup outcomes to drive the real CLI lookup loop.
+
+    Each ``file_lookup`` consumes the next ``(return_value, clears_session)`` from ``script``;
+    ``clears_session=True`` mimics a FILE 506 (invalid session). ``login`` (initial + any re-login)
+    and ``file_lookup`` calls are counted so the test can prove a bounded single retry.
+    """
+
+    def __init__(self, script: list[tuple[object, bool]]) -> None:
+        self._script = script
+        self._session: str | None = None
+        self.login_calls = 0
+        self.file_lookup_calls = 0
+
+    def login(self) -> tuple[bool, str]:
+        self.login_calls += 1
+        self._session = "S"
+        return (True, "")
+
+    @property
+    def has_session(self) -> bool:
+        return self._session is not None
+
+    def file_lookup(self, size: int, ed2k: str) -> object:  # noqa: ARG002
+        ret, clears = self._script[self.file_lookup_calls]
+        self.file_lookup_calls += 1
+        if clears:
+            self._session = None
+        return ret
+
+    def logout(self) -> None:
+        self._session = None
+
+    def encrypt(self) -> tuple[bool, str]:
+        return (True, "")
+
+    def disable_encryption(self) -> None:
+        pass
+
+    @property
+    def encryption_enabled(self) -> bool:
+        return False
+
+
+def _file_info() -> FileInfo:
+    return FileInfo(
+        fid=123,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="Show",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
+    )
+
+
+def _run_lookup_with_client(client: _RetryClient) -> None:
+    """Run main() online (dry-run) with `client` injected and a forced cache miss, so the real
+    AniDB lookup loop (re-login + retry) executes at its real call site."""
+    from anipyrenamer.anidb import AniDBConfig
+
+    groups = [DiscoveredGroup(video_path="/in/a.mkv", sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["anipyrenamer", "/in", "--dry-run"]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.cli.get_file_info", return_value=None),  # cache miss -> AniDB
+            patch("anipyrenamer.cli.build_plan", return_value=[]),
+            patch(
+                "anipyrenamer.anidb.AniDBConfig.from_env",
+                return_value=AniDBConfig("u", "p", "c", "1", 0),
+            ),
+            patch("anipyrenamer.anidb.AniDBClient", return_value=client),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code in (0, 2)
+    finally:
+        sys.argv = orig_argv
+
+
+def test_cli_file_506_reauths_and_retries_once() -> None:
+    """FILE 506 (session cleared) triggers exactly one re-login + one retry, and the retry result is used."""
+    client = _RetryClient([(None, True), (_file_info(), False)])  # 506, then success
+    _run_lookup_with_client(client)
+    assert client.file_lookup_calls == 2  # initial attempt + one retry
+    assert client.login_calls == 2  # initial login + one re-login
+
+
+def test_cli_file_506_retry_is_bounded() -> None:
+    """If the retry also yields nothing, there is NO further re-login/retry — the retry is bounded."""
+    client = _RetryClient([(None, True), (None, True)])  # 506, then still no result
+    _run_lookup_with_client(client)
+    assert client.file_lookup_calls == 2  # bounded: exactly one retry, no loop
+    assert client.login_calls == 2  # exactly one re-login
+
+
+def test_cli_not_found_does_not_reauth() -> None:
+    """An ordinary not-found (session kept) does NOT re-login or retry — distinct from FILE 506."""
+    client = _RetryClient([(None, False)])  # not-found, session intact
+    _run_lookup_with_client(client)
+    assert client.file_lookup_calls == 1  # no retry
+    assert client.login_calls == 1  # initial login only; no re-login
 
 
 def test_rename_apply_keeps_yna_confirm(monkeypatch: pytest.MonkeyPatch) -> None:

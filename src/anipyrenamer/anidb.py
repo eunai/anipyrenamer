@@ -8,6 +8,7 @@ import random
 import re
 import socket
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import hashlib
@@ -134,9 +135,18 @@ def _extract_reply_code(reply: str) -> int | None:
 class AniDBClient:
     """UDP client with throttle: burst 5, then 1 per 2.5s."""
 
-    def __init__(self, config: AniDBConfig, *, debug: bool = False) -> None:
+    def __init__(
+        self,
+        config: AniDBConfig,
+        *,
+        debug: bool = False,
+        now: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._config = config
         self._debug = debug
+        self._now = now
+        self._sleep = sleep
         self._sock: socket.socket | None = None
         self._session: str | None = None
         self._packets_sent = 0
@@ -210,7 +220,7 @@ class AniDBClient:
         return self._sock
 
     def _throttle(self) -> None:
-        now = time.monotonic()
+        now = self._now()
         if self._packets_sent == 0:
             self._burst_start = now
         self._packets_sent += 1
@@ -220,7 +230,7 @@ class AniDBClient:
         elapsed = now - self._burst_start
         required = (self._packets_sent - BURST_SIZE) * PACKET_INTERVAL
         if required > elapsed:
-            time.sleep(required - elapsed)
+            self._sleep(required - elapsed)
 
     def _send_recv(self, msg: str) -> str:
         last_error: Exception | None = None

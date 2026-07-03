@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import socket
 
 import pytest
@@ -10,6 +11,10 @@ from anipyrenamer.anidb import (
     AniDBClient,
     MAX_FIELD_LENGTH,
     AniDBConfig,
+    BURST_SIZE,
+    MAX_RETRIES,
+    PACKET_INTERVAL,
+    RETRY_BASE_SECONDS,
     _UDP_RECV_BUFFER,
     _looks_like_hash,
     _parse_file_response,
@@ -312,3 +317,178 @@ def test_mylist_add_or_update_by_fid_existing_entry_then_edit(
     )
     assert ok is True
     assert "updated" in msg.lower()
+
+
+# --- Slice 1: untested-invariant characterization — AniDB constants (SPEC.md §6) ---
+
+
+def test_throttle_and_retry_constants() -> None:
+    """Characterization: AniDB throttle/retry constants are the documented values (SPEC.md §6)."""
+    assert MAX_RETRIES == 3
+    assert RETRY_BASE_SECONDS == 0.5
+    assert BURST_SIZE == 5
+    assert PACKET_INTERVAL == 2.5
+
+
+def test_socket_timeout_is_15s() -> None:
+    """Characterization: the AniDB UDP socket uses a 15s timeout (SPEC.md §6)."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    sock = client._ensure_socket()
+    try:
+        assert sock.gettimeout() == 15.0
+    finally:
+        sock.close()
+
+
+def test_send_recv_once_default_timeout_is_5s() -> None:
+    """Characterization: the single send/recv attempt defaults to a 5s timeout (SPEC.md §6)."""
+    default = inspect.signature(AniDBClient._send_recv_once).parameters["timeout"].default
+    assert default == 5.0
+
+
+# --- Slice 3: MyList reply-code branch characterization (SPEC.md §6) ---
+
+
+def test_mylist_add_320_no_such_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Characterization: MYLISTADD 320 -> failure 'No such file on AniDB.'; session kept."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "320 NO SUCH FILE")
+    ok, msg = client.mylist_add_or_update_by_fid(22, add_to_mylist=True, state=1)
+    assert ok is False
+    assert msg == "No such file on AniDB."
+    assert client._session == "sess"
+
+
+def test_mylist_add_506_clears_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Characterization: MYLISTADD 506 -> 'Invalid session.' and the local session is cleared."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "506 INVALID SESSION")
+    ok, msg = client.mylist_add_or_update_by_fid(22, add_to_mylist=True, state=1)
+    assert ok is False
+    assert msg == "Invalid session."
+    assert client._session is None
+
+
+def test_mylist_edit_411_no_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Characterization: edit (via 310 -> MYLISTADD edit=1) 411 -> 'No such MyList entry.'; session kept."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    replies = iter(["310 FILE ALREADY IN MYLIST\n77", "411 NO SUCH MYLIST ENTRY"])
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: next(replies))
+    ok, msg = client.mylist_add_or_update_by_fid(22, add_to_mylist=True, state=2)
+    assert ok is False
+    assert msg == "No such MyList entry."
+    assert client._session == "sess"
+
+
+def test_mylist_edit_506_clears_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Characterization: edit 506 -> 'Invalid session.' and the local session is cleared."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    replies = iter(["310 FILE ALREADY IN MYLIST\n77", "506 INVALID SESSION"])
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: next(replies))
+    ok, msg = client.mylist_add_or_update_by_fid(22, add_to_mylist=True, state=2)
+    assert ok is False
+    assert msg == "Invalid session."
+    assert client._session is None
+
+
+def test_mylist_lookup_506_clears_session_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Characterization: MYLIST lookup 506 clears the local session and returns no entry (None)."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "506 INVALID SESSION")
+    entry = client.mylist_entry_by_fid(22)
+    assert entry is None
+    assert client._session is None
+
+
+# --- Slice 4: MyList update-only path with no existing entry (SPEC.md §6) ---
+
+
+def test_mylist_update_only_no_existing_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Characterization: update-only (add_to_mylist=False) with no existing entry fails with
+    'No existing MyList entry to update.' and never sends a MYLISTADD/add command."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    sent: list[str] = []
+
+    def fake_send(msg: str) -> str:
+        sent.append(msg)
+        return "321 NO SUCH ENTRY"  # MYLIST lookup: not 221 -> no existing entry
+
+    monkeypatch.setattr(client, "_send_recv", fake_send)
+    ok, msg = client.mylist_add_or_update_by_fid(22, add_to_mylist=False, state=1)
+    assert ok is False
+    assert msg == "No existing MyList entry to update."
+    # Update-only never takes the add/edit path: only the MYLIST lookup is sent, no MYLISTADD.
+    assert sent == ["MYLIST fid=22&s=sess"]
+    assert not any("MYLISTADD" in s for s in sent)
+
+
+# --- Slice 5 (client layer): FILE 506 clears the session; not-found does not (SPEC.md §6) ---
+
+
+def test_file_lookup_506_clears_session_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Characterization: FILE 506 (invalid session) clears the local session and returns None —
+    the caller's signal to re-login and retry."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "506 INVALID SESSION")
+    info = client.file_lookup(100, "A" * 32)
+    assert info is None
+    assert client.has_session is False  # session cleared -> re-login signal
+
+
+def test_file_lookup_not_found_keeps_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Characterization: an ordinary not-found (320/322/505) returns None but KEEPS the session,
+    so it is distinguishable from the 506 invalid-session path."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "320 NO SUCH FILE")
+    info = client.file_lookup(100, "A" * 32)
+    assert info is None
+    assert client.has_session is True  # session intact -> NOT a re-login signal
+
+
+# --- Slice 6: throttle timing via the injected clock/sleep seam (SPEC.md §6) ---
+
+
+def test_throttle_bursts_then_spaces_by_elapsed() -> None:
+    """Characterization: the first BURST_SIZE packets do not sleep; afterward _throttle enforces
+    PACKET_INTERVAL spacing, and the sleep is (required - elapsed) — not a blind PACKET_INTERVAL."""
+    clock = {"t": 0.0}
+    sleeps: list[float] = []
+
+    def fake_now() -> float:
+        return clock["t"]
+
+    def fake_sleep(secs: float) -> None:
+        sleeps.append(secs)
+        clock["t"] += secs  # a real sleep advances wall-clock by that much
+
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0), now=fake_now, sleep=fake_sleep)
+
+    # Burst: the first BURST_SIZE packets (all at t=0) are not throttled; burst_start anchors at 0.
+    for _ in range(BURST_SIZE):
+        client._throttle()
+    assert sleeps == []
+
+    # Packet BURST_SIZE+1 after only 1.0s of real work: required = 1 * PACKET_INTERVAL = 2.5,
+    # elapsed = 1.0, so it sleeps 2.5 - 1.0 = 1.5 (elapsed-aware, NOT a blind 2.5).
+    clock["t"] = 1.0
+    client._throttle()
+    assert sleeps == [pytest.approx(PACKET_INTERVAL - 1.0)]  # 1.5
+
+    # Next packet: required = 2 * PACKET_INTERVAL = 5.0; clock is now 2.5 (1.0 + 1.5 slept),
+    # elapsed = 2.5, so it sleeps 5.0 - 2.5 = 2.5.
+    client._throttle()
+    assert sleeps[-1] == pytest.approx(PACKET_INTERVAL)  # 2.5
+
+    # If wall-clock has already moved well past the schedule, there is NO sleep (elapsed-based).
+    clock["t"] = 100.0
+    before = len(sleeps)
+    client._throttle()
+    assert len(sleeps) == before  # already behind schedule -> no throttle sleep
