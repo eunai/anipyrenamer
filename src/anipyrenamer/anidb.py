@@ -16,7 +16,7 @@ import hashlib
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 
-from anipyrenamer.models import FileInfo
+from anipyrenamer.models import FileInfo, looks_like_hash
 
 _LOGGER = logging.getLogger("anipyrenamer.anidb")
 
@@ -106,21 +106,6 @@ class AniDBConfig:
             local_port=int(os.environ.get("ANIDB_LOCAL_PORT", "0") or "0"),
             api_key=os.environ.get("ANIDB_API_KEY", ""),
         )
-
-
-def _looks_like_hash(s: str) -> bool:
-    """True if string looks like a hex hash (CRC32, MD5, SHA1, ED2K, etc.) - do not use as title/group."""
-    if len(s) < 8:
-        return False
-    allowed = set("0123456789abcdefABCDEF-")
-    if not all(c in allowed for c in s):
-        return False
-    # CRC32 = 8 hex chars; MD5=32, SHA1=40, ED2K=32
-    if len(s) == 8 and sum(c in "abcdefABCDEF" for c in s) >= 2:
-        return True
-    if len(s) >= 16 and sum(c in "abcdefABCDEF" for c in s) >= 2:
-        return True
-    return False
 
 
 def _extract_reply_code(reply: str) -> int | None:
@@ -612,7 +597,7 @@ def _parse_file_response(data_line: str, size: int, ed2k: str) -> FileInfo:
             quality = _sanitize_field(p)
         elif p in ("TV", "DTV", "DVD", "VHS", "HDTV", "LD", "WEB", "Blu-ray", "Blu-Ray"):
             source = _sanitize_field(p)
-        elif _looks_like_hash(p):
+        elif looks_like_hash(p):
             continue  # do not use hash as title/group
         elif i >= 4 and len(p) > 2 and not p.isdigit() and "|" not in p:
             if not anime_title and p:

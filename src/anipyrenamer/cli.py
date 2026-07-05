@@ -29,11 +29,12 @@ from rich.progress import (
 
 from anipyrenamer.apply import apply_plan, preview_plan
 from anipyrenamer.cache import (
+    CacheOutcome,
     clear_file_anidb_cache,
     clear_file_anidb_entries,
     get_db_path,
     init_db,
-    get_file_info,
+    get_usable_file_info,
     set_file_info,
 )
 from anipyrenamer.conflicts import resolve_destination_conflicts
@@ -521,22 +522,18 @@ def _do_hashing_lookup_plan_apply(
 
                 ed2k = compute_ed2k(group.video_path, progress_callback=_on_progress)
                 progress_file.remove_task(file_task)
-            info = get_file_info(db_path, size, ed2k)
-            if args.refresh_cache and client is not None:
-                info = None
-            if info is not None and args.debug:
+            lookup = get_usable_file_info(
+                db_path, size, ed2k, refresh=args.refresh_cache, allow_refetch=client is not None
+            )
+            info = lookup.info
+            if lookup.outcome is not CacheOutcome.MISS and args.debug:
                 console.print(
                     f"[dim][debug] Using cached AniDB data for size={size} ed2k={ed2k[:16]}…[/dim]"
                 )
-            if info is not None and client:
-                from anipyrenamer.anidb import _looks_like_hash
-
-                if _looks_like_hash(info.anime_title):
-                    info = None
-                    if args.debug:
-                        console.print(
-                            "[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]"
-                        )
+            if lookup.outcome is CacheOutcome.REPAIR and args.debug:
+                console.print(
+                    "[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]"
+                )
             if info is not None:
                 lookup_source = "cache"
                 console.print(

@@ -1,4 +1,4 @@
-"""DTOs for AniDB and rename pipeline."""
+"""DTOs for AniDB and rename pipeline, plus lightweight shared model-adjacent helpers."""
 
 from __future__ import annotations
 
@@ -79,3 +79,18 @@ class RenameItem:
     new_path: str
     kind: RenameKind = RenameKind.FILE
     anime_type: str = ""  # For preview table (tv, movie, ova, web, etc.); from %anime_type%
+
+
+def looks_like_hash(s: str) -> bool:
+    """True if string looks like a hex hash (CRC32, MD5, SHA1, ED2K, etc.) - do not trust as title/group."""
+    if len(s) < 8:
+        return False
+    allowed = set("0123456789abcdefABCDEF-")
+    if not all(c in allowed for c in s):
+        return False
+    # CRC32 = 8 hex chars; MD5=32, SHA1=40, ED2K=32
+    if len(s) == 8 and sum(c in "abcdefABCDEF" for c in s) >= 2:
+        return True
+    if len(s) >= 16 and sum(c in "abcdefABCDEF" for c in s) >= 2:
+        return True
+    return False

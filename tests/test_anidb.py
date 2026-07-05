@@ -16,7 +16,6 @@ from anipyrenamer.anidb import (
     PACKET_INTERVAL,
     RETRY_BASE_SECONDS,
     _UDP_RECV_BUFFER,
-    _looks_like_hash,
     _parse_file_response,
     _redact,
     _safe_int,
@@ -172,13 +171,13 @@ def test_parse_file_response_with_quality_source() -> None:
     assert info.source == "DTV"
 
 
-def test_looks_like_hash_crc32_not_used_as_title() -> None:
-    """8-char hex (CRC32) must be treated as hash so FILE parser does not use it as anime_title."""
-    assert _looks_like_hash("d6be2d15") is True
-    assert _looks_like_hash("abcdef01") is True
-    assert _looks_like_hash("12345678") is False  # digits only, no a-f
-    assert _looks_like_hash("ab") is False  # too short
-    assert _looks_like_hash("e" * 32) is True  # MD5/ED2K length
+def test_parse_file_response_skips_hash_looking_field_as_title() -> None:
+    """A hash-looking reply field (e.g. CRC32) is never picked up as anime_title."""
+    size = 100
+    ed2k = "a" * 32
+    line = f"1|2|3|4|0||0|1|{size}|{ed2k}|d6be2d15|Show"
+    info = _parse_file_response(line, size=size, ed2k=ed2k)
+    assert info.anime_title == "Show"
 
 
 def test_send_recv_retries_transient_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

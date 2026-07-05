@@ -120,7 +120,7 @@ def test_cli_structured_log_file_writes_phases(tmp_path: Path) -> None:
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
-            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cache.get_file_info", return_value=info),
             patch(
                 "anipyrenamer.cli.build_plan",
                 return_value=[
@@ -300,7 +300,7 @@ def test_cli_on_conflict_fail_exits_one(monkeypatch: pytest.MonkeyPatch) -> None
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
-            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cache.get_file_info", return_value=info),
             patch(
                 "anipyrenamer.cli.build_plan",
                 side_effect=[
@@ -343,7 +343,7 @@ def test_cli_dry_run_with_lookup_skip_exits_partial(monkeypatch: pytest.MonkeyPa
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", side_effect=["A" * 32, "B" * 32]),
-            patch("anipyrenamer.cli.get_file_info", side_effect=[None, info]),
+            patch("anipyrenamer.cache.get_file_info", side_effect=[None, info]),
             patch(
                 "anipyrenamer.cli.build_plan",
                 return_value=[RenameItem("/in/b.mkv", "/dest/b.mkv", kind=RenameKind.FILE)],
@@ -401,7 +401,7 @@ def test_cli_wires_conflict_policy_and_strategy(monkeypatch: pytest.MonkeyPatch)
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
-            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cache.get_file_info", return_value=info),
             patch(
                 "anipyrenamer.cli.build_plan",
                 return_value=[RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
@@ -526,7 +526,7 @@ def test_cli_mylist_invokes_wizard_on_dry_run(monkeypatch: pytest.MonkeyPatch) -
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
-            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cache.get_file_info", return_value=info),
             patch(
                 "anipyrenamer.cli.build_plan",
                 return_value=[RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
@@ -579,7 +579,7 @@ def test_mylist_cli_passes_yes_no_confirm(monkeypatch: pytest.MonkeyPatch) -> No
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
-            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cache.get_file_info", return_value=info),
             patch(
                 "anipyrenamer.cli.build_plan",
                 return_value=[RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
@@ -672,7 +672,7 @@ def _run_lookup_with_client(client: _RetryClient) -> None:
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
-            patch("anipyrenamer.cli.get_file_info", return_value=None),  # cache miss -> AniDB
+            patch("anipyrenamer.cache.get_file_info", return_value=None),  # cache miss -> AniDB
             patch("anipyrenamer.cli.build_plan", return_value=[]),
             patch(
                 "anipyrenamer.anidb.AniDBConfig.from_env",
@@ -751,7 +751,7 @@ def test_rename_apply_keeps_yna_confirm(monkeypatch: pytest.MonkeyPatch) -> None
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
-            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cache.get_file_info", return_value=info),
             patch(
                 "anipyrenamer.cli.build_plan",
                 return_value=[RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
@@ -849,7 +849,7 @@ def test_sequential_hashing_multiple_files(monkeypatch: pytest.MonkeyPatch) -> N
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", side_effect=_mock_compute),
-            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cache.get_file_info", return_value=info),
             patch(
                 "anipyrenamer.cli.build_plan",
                 side_effect=[
@@ -891,7 +891,7 @@ def test_single_file_main_thread_hash(monkeypatch: pytest.MonkeyPatch) -> None:
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
-            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cache.get_file_info", return_value=info),
             patch(
                 "anipyrenamer.cli.build_plan",
                 return_value=[RenameItem("/in/a.mkv", "/dest/a.mkv", kind=RenameKind.FILE)],
@@ -945,7 +945,7 @@ def test_cli_hashing_progress_row_uses_filename_only(tmp_path: Path) -> None:
             patch("anipyrenamer.cli.Progress.add_task", capture_add_task),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
-            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cache.get_file_info", return_value=info),
             patch(
                 "anipyrenamer.cli.build_plan",
                 return_value=[RenameItem(vp, "/dest/a.mkv", kind=RenameKind.FILE)],
@@ -999,7 +999,7 @@ def test_clear_cache_uses_shared_hashing_helper(monkeypatch: pytest.MonkeyPatch)
             patch("anipyrenamer.cli.discover", return_value=groups),
             patch("anipyrenamer.cli._hash_group", side_effect=_mock_hash_group),
             patch("anipyrenamer.cli.clear_file_anidb_entries", return_value=2),
-            patch("anipyrenamer.cli.get_file_info", return_value=info),
+            patch("anipyrenamer.cache.get_file_info", return_value=info),
             patch(
                 "anipyrenamer.cli.build_plan",
                 side_effect=[
@@ -1041,3 +1041,175 @@ def test_keyboard_interrupt_during_hashing(
             mock_client.logout.assert_called()
     finally:
         sys.argv = orig_argv
+
+
+# ---------------------------------------------------------------------------
+# Characterization oracle for the usable-cache seam (#28, slice A).
+# These three tests pin the CLI-observable behavior of the inline refresh
+# and bad-cache repair branches BEFORE they move into cache.py. They must
+# pass unchanged before and after the seam lands — do not edit them as part
+# of that refactor.
+# ---------------------------------------------------------------------------
+
+
+def _seed_cache_entry(db: Path, *, fid: int, title: str) -> None:
+    from anipyrenamer.cache import init_db, set_file_info
+
+    init_db(str(db))
+    set_file_info(
+        str(db),
+        FileInfo(
+            fid=fid,
+            aid=2,
+            eid=3,
+            gid=4,
+            size=10,
+            ed2k="A" * 32,
+            quality="high",
+            source="TV",
+            anime_title=title,
+            episode_number="01",
+            episode_title="Pilot",
+            group_name="Group",
+        ),
+    )
+
+
+def _characterization_argv(tmp_path: Path, db: Path, log: Path, *extra: str) -> list[str]:
+    return [
+        "anipyrenamer",
+        str(tmp_path),
+        "--dry-run",
+        "--db",
+        str(db),
+        "--debug",
+        "--template",
+        "%title%%ext%",
+        "--log-level",
+        "INFO",
+        "--log-file",
+        str(log),
+        *extra,
+    ]
+
+
+def _run_characterization() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 0
+
+
+def test_cli_refresh_cache_bypasses_cached_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """C1: --refresh-cache with a client bypasses the cached entry and refetches."""
+    (tmp_path / "a.mkv").write_bytes(b"x")
+    db = tmp_path / "cache.sqlite"
+    log = tmp_path / "run.log"
+    _seed_cache_entry(db, fid=1, title="Show")
+    monkeypatch.setenv("ANIDB_USERNAME", "u")
+    monkeypatch.setenv("ANIDB_PASSWORD", "p")
+    monkeypatch.delenv("ANIDB_API_KEY", raising=False)
+    client_info = FileInfo(
+        fid=99, aid=2, eid=3, gid=4, size=10, ed2k="A" * 32, quality="high",
+        source="TV", anime_title="ClientShow", episode_number="01",
+        episode_title="Pilot", group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = _characterization_argv(tmp_path, db, log, "--refresh-cache")
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.anidb.AniDBClient") as MockAniDBClient,
+        ):
+            mock_client = MagicMock()
+            MockAniDBClient.return_value = mock_client
+            mock_client.encrypt.return_value = (True, "")
+            mock_client.login.return_value = (True, "")
+            mock_client.file_lookup.return_value = client_info
+            _run_characterization()
+            mock_client.file_lookup.assert_called_once_with(10, "A" * 32)
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert "Fetched from AniDB" in out
+    assert "Using cached AniDB data" not in out  # refresh discards before the debug hit line
+    assert "Cached title looks like hash" not in out
+    assert "fid=99 lookup_source=anidb" in log.read_text(encoding="utf-8")
+
+
+def test_cli_hash_looking_cached_title_repairs_with_both_debug_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """C2: hash-looking cached title with a client refetches; debug shows hit line THEN repair line."""
+    (tmp_path / "a.mkv").write_bytes(b"x")
+    db = tmp_path / "cache.sqlite"
+    log = tmp_path / "run.log"
+    _seed_cache_entry(db, fid=1, title="e" * 32)
+    monkeypatch.setenv("ANIDB_USERNAME", "u")
+    monkeypatch.setenv("ANIDB_PASSWORD", "p")
+    monkeypatch.delenv("ANIDB_API_KEY", raising=False)
+    client_info = FileInfo(
+        fid=99, aid=2, eid=3, gid=4, size=10, ed2k="A" * 32, quality="high",
+        source="TV", anime_title="ClientShow", episode_number="01",
+        episode_title="Pilot", group_name="Group",
+    )
+    groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = _characterization_argv(tmp_path, db, log)
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.anidb.AniDBClient") as MockAniDBClient,
+        ):
+            mock_client = MagicMock()
+            MockAniDBClient.return_value = mock_client
+            mock_client.encrypt.return_value = (True, "")
+            mock_client.login.return_value = (True, "")
+            mock_client.file_lookup.return_value = client_info
+            _run_characterization()
+            mock_client.file_lookup.assert_called_once_with(10, "A" * 32)
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    hit_idx = out.find("Using cached AniDB data")
+    repair_idx = out.find("Cached title looks like hash")
+    assert hit_idx != -1, "expected the cache-hit debug line on the repair path"
+    assert repair_idx != -1, "expected the repair debug line"
+    assert hit_idx < repair_idx, "hit line must precede repair line (current CLI order)"
+    assert "Fetched from AniDB" in out
+    assert "fid=99 lookup_source=anidb" in log.read_text(encoding="utf-8")
+
+
+def test_cli_offline_keeps_hash_looking_cached_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """C3: offline mode uses a hash-looking cached entry as-is (no repair without a refetch path)."""
+    (tmp_path / "a.mkv").write_bytes(b"x")
+    db = tmp_path / "cache.sqlite"
+    log = tmp_path / "run.log"
+    _seed_cache_entry(db, fid=7, title="e" * 32)
+    groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = _characterization_argv(tmp_path, db, log, "--offline")
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.anidb.AniDBClient") as MockAniDBClient,
+        ):
+            _run_characterization()
+            MockAniDBClient.assert_not_called()
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert "Using cached AniDB data" in out
+    assert "Using local cache" in out
+    assert "Cached title looks like hash" not in out
+    assert "fid=7 lookup_source=cache" in log.read_text(encoding="utf-8")

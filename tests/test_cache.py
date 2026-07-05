@@ -9,6 +9,9 @@ import pytest
 
 from anipyrenamer.cache import (
     CACHE_STALE_SECONDS,
+    CacheLookup,
+    CacheOutcome,
+    get_usable_file_info,
     clear_file_anidb_cache,
     clear_file_anidb_entries,
     get_file_info,
@@ -168,3 +171,120 @@ def test_clear_file_anidb_cache(tmp_path: Path) -> None:
     set_file_info(db, FileInfo(1, 2, 3, 4, 100, "e" * 32, "high", "TV"))
     clear_file_anidb_cache(db)
     assert get_file_info(db, 100, "e" * 32) is None
+
+
+# ---------------------------------------------------------------------------
+# Usable-cache seam (#28, slice C): run-level usability policy layered on the
+# get_file_info contract.
+# ---------------------------------------------------------------------------
+
+
+def _seed_entry(db: str, *, title: str = "Show", fid: int = 1) -> None:
+    set_file_info(
+        db,
+        FileInfo(
+            fid=fid,
+            aid=2,
+            eid=3,
+            gid=4,
+            size=100,
+            ed2k="a" * 32,
+            quality="high",
+            source="TV",
+            anime_title=title,
+        ),
+    )
+
+
+def _usable(db: str, *, refresh: bool, allow_refetch: bool) -> "CacheLookup":
+    return get_usable_file_info(db, 100, "a" * 32, refresh=refresh, allow_refetch=allow_refetch)
+
+
+def test_usable_fresh_entry_is_usable(tmp_path: Path) -> None:
+    """S1: a fresh entry with no overrides is USABLE and carries the FileInfo."""
+    db = str(tmp_path / "t.sqlite")
+    init_db(db)
+    _seed_entry(db)
+    lookup = _usable(db, refresh=False, allow_refetch=True)
+    assert lookup.outcome is CacheOutcome.USABLE
+    assert lookup.info is not None and lookup.info.fid == 1
+
+
+def test_usable_absent_entry_is_miss(tmp_path: Path) -> None:
+    """S2: no entry for the key is a MISS with no FileInfo."""
+    db = str(tmp_path / "t.sqlite")
+    init_db(db)
+    lookup = _usable(db, refresh=False, allow_refetch=True)
+    assert lookup.outcome is CacheOutcome.MISS
+    assert lookup.info is None
+
+
+def test_usable_stale_entry_is_miss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """S3: an entry past the staleness window is a MISS (current get_file_info contract)."""
+    db = str(tmp_path / "t.sqlite")
+    init_db(db)
+    _seed_entry(db)
+    now = 1_000_000_000.0
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE file_anidb SET cached_at = ? WHERE size = ? AND ed2k = ?",
+            (now - CACHE_STALE_SECONDS - 1, 100, "a" * 32),
+        )
+        conn.commit()
+    monkeypatch.setattr("anipyrenamer.cache.time.time", lambda: now)
+    lookup = _usable(db, refresh=False, allow_refetch=True)
+    assert lookup.outcome is CacheOutcome.MISS
+    assert lookup.info is None
+
+
+def test_usable_refresh_forces_miss_only_when_refetch_allowed(tmp_path: Path) -> None:
+    """S4: refresh discards the entry when refetch is allowed; without a refetch path it does not."""
+    db = str(tmp_path / "t.sqlite")
+    init_db(db)
+    _seed_entry(db)
+    forced = _usable(db, refresh=True, allow_refetch=True)
+    assert forced.outcome is CacheOutcome.MISS
+    assert forced.info is None
+    kept = _usable(db, refresh=True, allow_refetch=False)
+    assert kept.outcome is CacheOutcome.USABLE
+    assert kept.info is not None
+
+
+def test_usable_hash_looking_title_is_repair_when_refetch_allowed(tmp_path: Path) -> None:
+    """S5: a hash-looking cached title with a refetch path is REPAIR with no FileInfo."""
+    db = str(tmp_path / "t.sqlite")
+    init_db(db)
+    _seed_entry(db, title="e" * 32)
+    lookup = _usable(db, refresh=False, allow_refetch=True)
+    assert lookup.outcome is CacheOutcome.REPAIR
+    assert lookup.info is None
+
+
+def test_usable_hash_looking_title_stays_usable_without_refetch(tmp_path: Path) -> None:
+    """S6: with no refetch path a hash-looking cached title is NOT discarded (slice-1 preservation)."""
+    db = str(tmp_path / "t.sqlite")
+    init_db(db)
+    _seed_entry(db, title="e" * 32)
+    lookup = _usable(db, refresh=False, allow_refetch=False)
+    assert lookup.outcome is CacheOutcome.USABLE
+    assert lookup.info is not None and lookup.info.anime_title == "e" * 32
+
+
+def test_usable_refresh_takes_precedence_over_repair(tmp_path: Path) -> None:
+    """S7: refresh + hash-looking title yields MISS, not REPAIR (refresh-discard checked first)."""
+    db = str(tmp_path / "t.sqlite")
+    init_db(db)
+    _seed_entry(db, title="e" * 32)
+    lookup = _usable(db, refresh=True, allow_refetch=True)
+    assert lookup.outcome is CacheOutcome.MISS
+    assert lookup.info is None
+
+
+def test_cache_lookup_is_frozen(tmp_path: Path) -> None:
+    """CacheLookup is immutable; callers cannot mutate the decision."""
+    db = str(tmp_path / "t.sqlite")
+    init_db(db)
+    _seed_entry(db)
+    lookup = _usable(db, refresh=False, allow_refetch=True)
+    with pytest.raises(AttributeError):
+        lookup.outcome = CacheOutcome.MISS  # type: ignore[misc]

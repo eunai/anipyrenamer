@@ -6,9 +6,11 @@ import os
 import re
 import sqlite3
 import time
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
-from anipyrenamer.models import FileInfo
+from anipyrenamer.models import FileInfo, looks_like_hash
 from anipyrenamer.permissions import ensure_owner_only
 
 CACHE_FILENAME = "anipyrenamer_cache.sqlite"
@@ -185,6 +187,42 @@ def get_file_info(db_path: str, size: int, ed2k: str) -> FileInfo | None:
         if time.time() - cached_at > CACHE_STALE_SECONDS:
             return None
         return _row_to_file_info(row)
+
+
+class CacheOutcome(Enum):
+    """Why a cache lookup did or did not yield a usable entry."""
+
+    USABLE = "usable"
+    MISS = "miss"
+    REPAIR = "repair"
+
+
+@dataclass(frozen=True)
+class CacheLookup:
+    """Result of the run-level usability decision; info is present only for USABLE."""
+
+    info: FileInfo | None
+    outcome: CacheOutcome
+
+
+def get_usable_file_info(
+    db_path: str, size: int, ed2k: str, *, refresh: bool, allow_refetch: bool
+) -> CacheLookup:
+    """
+    Run-level usability policy layered on the get_file_info contract.
+
+    refresh discards the cached entry, and a hash-looking cached title is
+    discarded for repair, only when a refetch is possible this run
+    (allow_refetch); refresh-discard takes precedence over repair.
+    """
+    if refresh and allow_refetch:
+        return CacheLookup(None, CacheOutcome.MISS)
+    info = get_file_info(db_path, size, ed2k)
+    if info is None:
+        return CacheLookup(None, CacheOutcome.MISS)
+    if allow_refetch and looks_like_hash(info.anime_title):
+        return CacheLookup(None, CacheOutcome.REPAIR)
+    return CacheLookup(info, CacheOutcome.USABLE)
 
 
 def _optional(row: sqlite3.Row, key: str) -> str:
