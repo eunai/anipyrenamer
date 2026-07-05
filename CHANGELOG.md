@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-07-05
+
+### Changed
+
+- Cached AniDB file lookups no longer expire automatically: once a file is looked up, its entry stays usable until you explicitly refresh or clear it — `--refresh-cache`, `--clear-cache`/`--clear-cache-all`, or an automatic repair when a cached title looks wrong and AniDB is reachable. Offline runs (`--offline`) now use older cache entries instead of skipping them; rescans of an already-known library no longer silently re-hit AniDB, so use `--refresh-cache` when you want to pick up title or group corrections.
+
 ## [2.0.1] - 2026-06-28
 
 ### Fixed
