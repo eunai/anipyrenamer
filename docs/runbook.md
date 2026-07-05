@@ -59,7 +59,7 @@ Treat **2** as “review the log and plan, fix issues, re-run if needed.”
 | `AniDB request failed after 3 attempts` | UDP loss, firewall, or AniDB down | Network; retry later; try `--offline` if cache populated |
 | Login / AUTH errors | Wrong credentials or banned client | `.env` vs `.env.example`; AniDB client name/version |
 | No rename plan / many SKIP rows | Missing FILE in AniDB or empty cache offline | Run online once; verify ED2K and file size |
-| “Using local cache” but wrong title | Stale or bad cache row | `--refresh-cache` or `--clear-cache` for those files |
+| “Using local cache” but wrong title | Outdated or bad cache entry | `--refresh-cache` or `--clear-cache` for those files |
 | Permission denied on move | File open elsewhere; ACL | Close players; run with access to paths |
 | Exit 2 after apply | Some destinations existed or moves failed | Preview warnings; `--on-conflict` / dedupe options |
 | Wizard / MyList issues | No `fid` or session | Files must be known to AniDB; run a successful online rename or lookup first |

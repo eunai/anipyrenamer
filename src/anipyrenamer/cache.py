@@ -15,9 +15,6 @@ from anipyrenamer.permissions import ensure_owner_only
 
 CACHE_FILENAME = "anipyrenamer_cache.sqlite"
 
-CACHE_STALE_DAYS = 30
-CACHE_STALE_SECONDS = CACHE_STALE_DAYS * 24 * 60 * 60
-
 # Extra columns for AniAdd-style variables (migration adds if missing)
 FILE_ANIDB_EXTRA_COLUMNS = [
     "title_romaji",
@@ -175,16 +172,13 @@ def clear_file_anidb_entries(db_path: str, entries: list[tuple[int, str]]) -> in
 
 
 def get_file_info(db_path: str, size: int, ed2k: str) -> FileInfo | None:
-    """Return cached FileInfo if present and not stale (>30 days)."""
+    """Return cached FileInfo if present; entries never expire by age."""
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM file_anidb WHERE ed2k = ? AND size = ?", (ed2k, size)
         ).fetchone()
         if not row:
-            return None
-        cached_at = row["cached_at"]
-        if time.time() - cached_at > CACHE_STALE_SECONDS:
             return None
         return _row_to_file_info(row)
 

@@ -305,7 +305,7 @@ def main() -> None:
     parser.add_argument(
         "--refresh-cache",
         action="store_true",
-        help="Ignore cache TTL and refetch AniDB data for scanned files when online.",
+        help="Bypass the cache and refetch AniDB data for scanned files when online.",
     )
     parser.add_argument(
         "--mylist",

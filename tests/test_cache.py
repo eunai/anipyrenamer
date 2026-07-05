@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from anipyrenamer.cache import (
-    CACHE_STALE_SECONDS,
     CacheLookup,
     CacheOutcome,
     get_usable_file_info,
@@ -131,24 +130,27 @@ def test_get_file_info_missing_returns_none(tmp_path: Path) -> None:
     assert get_file_info(db, 999, "x" * 32) is None
 
 
-def test_get_file_info_stale_row_returns_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cache rows older than the TTL are treated as misses."""
+def test_get_file_info_old_entry_still_returned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cache entries never expire by age: an old entry is still returned (#29)."""
     db = str(tmp_path / "test.sqlite")
     init_db(db)
     info = FileInfo(1, 2, 3, 4, 100, "a" * 32, "high", "TV")
     set_file_info(db, info)
 
     now = 1_000_000_000.0
-    stale_cached_at = now - CACHE_STALE_SECONDS - 1
+    ten_years_seconds = 10 * 365 * 24 * 60 * 60
+    old_cached_at = now - ten_years_seconds
     with sqlite3.connect(db) as conn:
         conn.execute(
             "UPDATE file_anidb SET cached_at = ? WHERE size = ? AND ed2k = ?",
-            (stale_cached_at, 100, "a" * 32),
+            (old_cached_at, 100, "a" * 32),
         )
         conn.commit()
 
     monkeypatch.setattr("anipyrenamer.cache.time.time", lambda: now)
-    assert get_file_info(db, 100, "a" * 32) is None
+    got = get_file_info(db, 100, "a" * 32)
+    assert got is not None
+    assert got.fid == 1
 
 
 def test_clear_file_anidb_entries(tmp_path: Path) -> None:
@@ -219,22 +221,23 @@ def test_usable_absent_entry_is_miss(tmp_path: Path) -> None:
     assert lookup.info is None
 
 
-def test_usable_stale_entry_is_miss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """S3: an entry past the staleness window is a MISS (current get_file_info contract)."""
+def test_usable_old_entry_is_usable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """S3: an old entry is USABLE; age never drives invalidation (#29)."""
     db = str(tmp_path / "t.sqlite")
     init_db(db)
     _seed_entry(db)
     now = 1_000_000_000.0
+    ten_years_seconds = 10 * 365 * 24 * 60 * 60
     with sqlite3.connect(db) as conn:
         conn.execute(
             "UPDATE file_anidb SET cached_at = ? WHERE size = ? AND ed2k = ?",
-            (now - CACHE_STALE_SECONDS - 1, 100, "a" * 32),
+            (now - ten_years_seconds, 100, "a" * 32),
         )
         conn.commit()
     monkeypatch.setattr("anipyrenamer.cache.time.time", lambda: now)
     lookup = _usable(db, refresh=False, allow_refetch=True)
-    assert lookup.outcome is CacheOutcome.MISS
-    assert lookup.info is None
+    assert lookup.outcome is CacheOutcome.USABLE
+    assert lookup.info is not None
 
 
 def test_usable_refresh_forces_miss_only_when_refetch_allowed(tmp_path: Path) -> None:

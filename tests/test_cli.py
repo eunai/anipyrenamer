@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import sqlite3
 import sys
 from pathlib import Path, WindowsPath
 from unittest.mock import MagicMock, patch
@@ -1212,4 +1213,48 @@ def test_cli_offline_keeps_hash_looking_cached_entry(
     assert "Using cached AniDB data" in out
     assert "Using local cache" in out
     assert "Cached title looks like hash" not in out
+    assert "fid=7 lookup_source=cache" in log.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# #29: cached entries never expire by age. This test is NOT part of the #28
+# oracle above and may be edited as the age-policy contract evolves.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_offline_old_cached_entry_is_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Offline mode plans from an old cached entry instead of skipping it for age (#29)."""
+    from anipyrenamer.cache import time as cache_time
+
+    (tmp_path / "a.mkv").write_bytes(b"x")
+    db = tmp_path / "cache.sqlite"
+    log = tmp_path / "run.log"
+    _seed_cache_entry(db, fid=7, title="Show")
+    now = cache_time.time()
+    ten_years_seconds = 10 * 365 * 24 * 60 * 60
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "UPDATE file_anidb SET cached_at = ? WHERE size = ? AND ed2k = ?",
+            (now - ten_years_seconds, 10, "A" * 32),
+        )
+        conn.commit()
+    groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = _characterization_argv(tmp_path, db, log, "--offline")
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch("anipyrenamer.anidb.AniDBClient") as MockAniDBClient,
+        ):
+            _run_characterization()
+            MockAniDBClient.assert_not_called()
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert "Using cached AniDB data" in out
+    assert "Using local cache" in out
     assert "fid=7 lookup_source=cache" in log.read_text(encoding="utf-8")
