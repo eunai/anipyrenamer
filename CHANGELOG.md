@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The warning about a world-readable `.env` now checks the resolved path returned by dotenv discovery, including a parent-directory `.env`, instead of always checking a `.env` in the current directory. Previously the warning could inspect the wrong file — or none — and miss an exposed `.env` in use. The well-known config-directory path continues to be checked separately. The warning names paths only, never file contents. (#39)
+
 ## [2.1.0] - 2026-07-05
 
 ### Changed

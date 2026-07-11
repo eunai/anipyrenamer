@@ -70,9 +70,11 @@ def _load_env() -> None:
 
     if dotted_usecwd:
         load_dotenv(dotted_usecwd)
-    local_env = Path(".env")
-    if local_env.exists():
-        warn_if_world_readable(local_env)
+        # Warn against the *resolved* discovered path (may be a parent .env),
+        # not a literal cwd .env, which may be a different or non-existent file.
+        discovered = Path(dotted_usecwd)
+        if discovered.exists():
+            warn_if_world_readable(discovered)
     well_known = _get_well_known_env_path()
     if well_known is not None:
         if well_known.exists():

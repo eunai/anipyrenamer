@@ -50,6 +50,67 @@ def test_cli_import_does_not_call_load_dotenv_until_main(monkeypatch: pytest.Mon
     assert len(calls) >= 1
 
 
+def test_load_env_warning_targets_resolved_discovered_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #39: exposure warning must target the *resolved* discovered .env.
+
+    ``find_dotenv(usecwd=True)`` may resolve a parent ``.env``; the world-readable
+    warning must inspect that resolved path, not a literal cwd ``.env`` that may be a
+    different (or non-existent) file. Paths only — never dotenv contents (SPEC §7).
+    """
+    resolved = str(Path("some") / "parent" / ".env")
+    warned: list[str] = []
+
+    def spy_warn(p: object) -> None:
+        warned.append(str(p))
+
+    real_exists = Path.exists
+
+    def fake_exists(self: Path) -> bool:
+        if str(self) == resolved:
+            return True
+        if self == Path(".env"):
+            return False
+        return real_exists(self)
+
+    monkeypatch.setattr(cli, "find_dotenv", lambda *a, **k: resolved)
+    monkeypatch.setattr(cli, "load_dotenv", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "warn_if_world_readable", spy_warn)
+    monkeypatch.setattr(cli, "_get_well_known_env_path", lambda: None)
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    cli._load_env()
+
+    assert warned == [resolved]
+
+
+def test_load_env_warns_well_known_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The well-known config-dir .env is still checked for exposure when present."""
+    well_known = Path("config") / "anipyrenamer" / ".env"
+    warned: list[str] = []
+
+    def spy_warn(p: object) -> None:
+        warned.append(str(p))
+
+    real_exists = Path.exists
+
+    def fake_exists(self: Path) -> bool:
+        if self == well_known:
+            return True
+        return real_exists(self)
+
+    monkeypatch.setattr(cli, "find_dotenv", lambda *a, **k: "")
+    monkeypatch.setattr(cli, "load_dotenv", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "warn_if_world_readable", spy_warn)
+    monkeypatch.setattr(cli, "_get_well_known_env_path", lambda: well_known)
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    cli._load_env()
+
+    assert str(well_known) in warned
+
+
 def test_cli_help_exits_zero() -> None:
     """Running anipyrenamer --help should exit with code 0."""
     orig_argv = sys.argv
@@ -125,7 +186,9 @@ def test_cli_structured_log_file_writes_phases(tmp_path: Path) -> None:
             patch(
                 "anipyrenamer.cli.build_plan",
                 return_value=[
-                    RenameItem(str(tmp_path / "a.mkv"), str(tmp_path / "out.mkv"), kind=RenameKind.FILE)
+                    RenameItem(
+                        str(tmp_path / "a.mkv"), str(tmp_path / "out.mkv"), kind=RenameKind.FILE
+                    )
                 ],
             ),
         ):
@@ -1017,9 +1080,7 @@ def test_clear_cache_uses_shared_hashing_helper(monkeypatch: pytest.MonkeyPatch)
         sys.argv = orig_argv
 
 
-def test_keyboard_interrupt_during_hashing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_keyboard_interrupt_during_hashing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """KeyboardInterrupt during hashing calls logout and exits 130."""
     (tmp_path / "a.mkv").write_bytes(b"x")
     (tmp_path / "b.mkv").write_bytes(b"y")
@@ -1112,9 +1173,18 @@ def test_cli_refresh_cache_bypasses_cached_entry(
     monkeypatch.setenv("ANIDB_PASSWORD", "p")
     monkeypatch.delenv("ANIDB_API_KEY", raising=False)
     client_info = FileInfo(
-        fid=99, aid=2, eid=3, gid=4, size=10, ed2k="A" * 32, quality="high",
-        source="TV", anime_title="ClientShow", episode_number="01",
-        episode_title="Pilot", group_name="Group",
+        fid=99,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="ClientShow",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
     )
     groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
     orig_argv = sys.argv
@@ -1154,9 +1224,18 @@ def test_cli_hash_looking_cached_title_repairs_with_both_debug_lines(
     monkeypatch.setenv("ANIDB_PASSWORD", "p")
     monkeypatch.delenv("ANIDB_API_KEY", raising=False)
     client_info = FileInfo(
-        fid=99, aid=2, eid=3, gid=4, size=10, ed2k="A" * 32, quality="high",
-        source="TV", anime_title="ClientShow", episode_number="01",
-        episode_title="Pilot", group_name="Group",
+        fid=99,
+        aid=2,
+        eid=3,
+        gid=4,
+        size=10,
+        ed2k="A" * 32,
+        quality="high",
+        source="TV",
+        anime_title="ClientShow",
+        episode_number="01",
+        episode_title="Pilot",
+        group_name="Group",
     )
     groups = [DiscoveredGroup(video_path=str(tmp_path / "a.mkv"), sidecar_paths=())]
     orig_argv = sys.argv
