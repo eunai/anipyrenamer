@@ -39,6 +39,7 @@ from anipyrenamer.cache import (
 )
 from anipyrenamer.conflicts import resolve_destination_conflicts
 from anipyrenamer.discovery import discover, get_file_size
+from anipyrenamer.doctor import run_doctor
 from anipyrenamer.ed2k import compute_ed2k
 from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKind
 from anipyrenamer.mylist import run_mylist_wizard
@@ -58,7 +59,7 @@ def _get_well_known_env_path() -> Path | None:
     return Path.home() / ".config" / "anipyrenamer" / ".env"
 
 
-def _load_env() -> None:
+def _load_env() -> tuple[Path, ...]:
     """Load ``.env``: walk **upward from process cwd**, then well-known config path.
 
     Uses ``find_dotenv(usecwd=True)`` so discovery matches operator expectations when
@@ -66,9 +67,11 @@ def _load_env() -> None:
     dev-repo ``.env`` via ``python-dotenv``'s default anchor). Loads do not override
     already-set environment variables (override=False).
     """
+    sources: list[Path] = []
     dotted_usecwd = find_dotenv(usecwd=True) or ""
 
     if dotted_usecwd:
+        sources.append(Path(dotted_usecwd))
         load_dotenv(dotted_usecwd)
         # Warn against the *resolved* discovered path (may be a parent .env),
         # not a literal cwd .env, which may be a different or non-existent file.
@@ -78,8 +81,10 @@ def _load_env() -> None:
     well_known = _get_well_known_env_path()
     if well_known is not None:
         if well_known.exists():
+            sources.append(well_known)
             warn_if_world_readable(well_known)
         load_dotenv(well_known)
+    return tuple(sources)
 
 
 _LOG = logging.getLogger("anipyrenamer.cli")
@@ -207,9 +212,64 @@ def _prompt_yes_no(message: str) -> str:
         print("Please enter Y or n.")
 
 
+# Doctor's explicit-argv allowlist (SPEC.md §8): only these dests may accompany
+# --doctor. "help" is listed for contract completeness even though argparse's
+# own -h/--help handling always exits during parse_args(), before this
+# allowlist ever runs. Revalidate this set whenever a new parser argument is added.
+_DOCTOR_ALLOWED_DESTS = frozenset(
+    {"doctor", "offline", "debug", "log_file", "log_level", "db", "help"}
+)
+
+
+def _validate_doctor_allowlist(parser: argparse.ArgumentParser, argv: list[str]) -> None:
+    """Reject any explicitly supplied option or positional not in the doctor allowlist.
+
+    Classification is by *explicitly supplied* option strings on the raw argv,
+    not by whether the parsed value differs from its default: a value equal to
+    its default but typed on the command line is still an offender. Value
+    tokens belonging to an allowlisted option (e.g. the level after
+    ``--log-level``) are consumed and skipped, not evaluated as positionals.
+    """
+    option_to_action: dict[str, argparse.Action] = {}
+    for action in parser._actions:  # noqa: SLF001 - argparse exposes no public option-string map
+        for option_string in action.option_strings:
+            option_to_action[option_string] = action
+
+    offenders: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        looks_like_option = token.startswith("-") and len(token) > 1
+        if not looks_like_option:
+            # A bare non-flag token (including a lone "-") is a positional path;
+            # doctor accepts none.
+            offenders.append(token)
+            index += 1
+            continue
+        name, _, inline_value = token.partition("=")
+        matched_action = option_to_action.get(name)
+        if matched_action is None or matched_action.dest not in _DOCTOR_ALLOWED_DESTS:
+            offenders.append(name)
+            index += 1
+            continue
+        takes_value = matched_action.nargs != 0 and not isinstance(
+            matched_action,
+            (argparse._StoreTrueAction, argparse._StoreFalseAction, argparse._HelpAction),
+        )
+        if takes_value and not inline_value:
+            index += 1  # skip the option's value token, e.g. "DEBUG" after --log-level
+        index += 1
+
+    if offenders:
+        parser.error(
+            "--doctor accepts only --offline, --debug, --log-file, --log-level, --db, "
+            "and -h/--help; unexpected: " + ", ".join(offenders)
+        )
+
+
 def main() -> None:
     """Run full pipeline: discover, hash, lookup, plan, preview, apply."""
-    _load_env()
+    env_sources = _load_env()
     parser = argparse.ArgumentParser(
         prog="anipyrenamer",
         description="Rename anime files using ED2K hash and AniDB.",
@@ -272,6 +332,11 @@ def main() -> None:
         help="Use cache only; no AniDB API calls.",
     )
     parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run read-only setup checks and exit.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Log AniDB request/response and cache hits (for debugging).",
@@ -332,6 +397,16 @@ def main() -> None:
     args = parser.parse_args()
 
     _configure_cli_logging(level_name=args.log_level, log_file=args.log_file)
+
+    if args.doctor:
+        _validate_doctor_allowlist(parser, sys.argv[1:])
+        sys.exit(
+            run_doctor(
+                db_path=args.db,
+                offline=args.offline,
+                env_sources=env_sources,
+            )
+        )
 
     if not args.paths:
         parser.print_help()

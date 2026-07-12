@@ -15,6 +15,13 @@ from anipyrenamer.permissions import ensure_owner_only
 
 CACHE_FILENAME = "anipyrenamer_cache.sqlite"
 
+# SQLite primary result code (sqlite3.Error.sqlite_errorcode), never message text.
+# SQLITE_BUSY is inconclusive lock contention (warn); every other SQLite/OS
+# error (SQLITE_READONLY, malformed, SQLITE_IOERR, disk-full, ...) is a proven
+# inability to complete the probe (fail) per the Check-4 outcome table.
+_SQLITE_BUSY = 5
+_PROBE_TIMEOUT = 2.0
+
 # Extra columns for AniAdd-style variables (migration adds if missing)
 FILE_ANIDB_EXTRA_COLUMNS = [
     "title_romaji",
@@ -146,6 +153,234 @@ def init_db(db_path: str) -> None:
                 conn.execute(f"ALTER TABLE file_anidb ADD COLUMN {col} TEXT")
         conn.commit()
     ensure_owner_only(db_path)
+
+
+class CacheProbeOutcome(Enum):
+    """Severity of the bounded, non-persistent Check-4 cache operational probe."""
+
+    OPERATIONAL = "operational"
+    INCONCLUSIVE = "inconclusive"
+    UNUSABLE = "unusable"
+
+
+@dataclass(frozen=True)
+class CacheProbeResult:
+    """A sanitized Check-4 outcome: names/paths only, never raw exception text."""
+
+    outcome: CacheProbeOutcome
+    detail: str
+
+
+def _sqlite_errorcode(error: sqlite3.Error) -> int | None:
+    return getattr(error, "sqlite_errorcode", None)
+
+
+def _classify_operational_error(error: sqlite3.Error | OSError) -> CacheProbeOutcome:
+    """Classify by SQLite result code / OS errno-winerror, never message text."""
+    if isinstance(error, sqlite3.Error):
+        code = _sqlite_errorcode(error)
+        if code == _SQLITE_BUSY:
+            return CacheProbeOutcome.INCONCLUSIVE
+        return CacheProbeOutcome.UNUSABLE
+    return CacheProbeOutcome.UNUSABLE
+
+
+def _cleanup_step_name(path: Path) -> str:
+    """Categorize a cleanup artifact for the sanitized failure detail (SPEC.md §8)."""
+    if path.name.endswith(("-journal", "-wal", "-shm")):
+        return "sidecar file"
+    if path.suffix == ".sqlite":
+        return "temporary probe database"
+    return "throwaway directory"
+
+
+def _cleanup_paths(paths: list[Path]) -> str | None:
+    """Remove probe artifacts in reverse order; return a sanitized detail on residue.
+
+    An already-absent artifact is not a cleanup failure. Any artifact that
+    remains, or whose removal cannot be verified, dominates to a `fail`. The
+    detail names the residual path and which cleanup step failed (SPEC.md §8).
+    """
+    residue: Path | None = None
+    for path in reversed(paths):
+        if not path.exists():
+            continue
+        try:
+            if path.is_dir():
+                path.rmdir()
+            else:
+                path.unlink()
+        except OSError:
+            residue = path
+            break
+        if path.exists():
+            residue = path
+            break
+    if residue is None:
+        return None
+    return f"probe cleanup left a residual {_cleanup_step_name(residue)}: {residue}"
+
+
+def _sqlite_sidecars(db_path: Path) -> list[Path]:
+    return [
+        db_path,
+        Path(str(db_path) + "-journal"),
+        Path(str(db_path) + "-wal"),
+        Path(str(db_path) + "-shm"),
+    ]
+
+
+def _deep_minimal_probe(parent: Path) -> tuple[CacheProbeOutcome, str, list[Path]]:
+    """Let SQLite create a uniquely-named temp DB under ``parent``; write, commit, no pre-create.
+
+    Returns the outcome, a sanitized detail, and the artifact paths to clean up.
+    """
+    probe_path = parent / f".anipyrenamer-doctor-{os.getpid()}-{time.time_ns()}.sqlite"
+    artifacts = _sqlite_sidecars(probe_path)
+    try:
+        connection = sqlite3.connect(probe_path, timeout=_PROBE_TIMEOUT)
+        try:
+            connection.execute("CREATE TABLE doctor_probe (ok INTEGER NOT NULL)")
+            connection.commit()
+        finally:
+            connection.close()
+        return CacheProbeOutcome.OPERATIONAL, f"parent is operationally usable: {parent}", artifacts
+    except (sqlite3.Error, OSError) as error:
+        return (
+            _classify_operational_error(error),
+            f"parent is not operationally usable: {parent}",
+            artifacts,
+        )
+
+
+def _probe_and_cleanup(directory: Path) -> CacheProbeResult:
+    """Run the deep-minimal probe in ``directory``; cleanup always runs, even on an escaped error.
+
+    Cleanup residue or an unverifiable cleanup dominates to `UNUSABLE` per the
+    Check-4 cleanup-dominates rule (SPEC.md §8 / design note).
+    """
+    artifacts: list[Path] = []
+    try:
+        outcome, detail, artifacts = _deep_minimal_probe(directory)
+        return CacheProbeResult(outcome, detail)
+    finally:
+        cleanup_detail = _cleanup_paths(artifacts)
+        if cleanup_detail is not None:
+            return CacheProbeResult(CacheProbeOutcome.UNUSABLE, cleanup_detail)  # noqa: B012
+
+
+def _nearest_existing_ancestor(path: Path) -> tuple[Path, int]:
+    """Return the nearest existing ancestor of ``path`` and the number of missing levels."""
+    missing = 0
+    candidate = path
+    while not candidate.exists():
+        parent = candidate.parent
+        if parent == candidate:
+            break
+        candidate = parent
+        missing += 1
+    return candidate, missing
+
+
+def _throwaway_ancestor_probe(missing_parent: Path) -> CacheProbeResult:
+    """Missing parents: probe an equivalent-depth throwaway tree under the nearest ancestor."""
+    ancestor, missing_levels = _nearest_existing_ancestor(missing_parent)
+    if missing_levels == 0:
+        # The direct parent exists after all; fall through to the deep-minimal probe.
+        return _probe_and_cleanup(missing_parent)
+
+    root = ancestor / f".anipyrenamer-doctor-{os.getpid()}-{time.time_ns()}"
+    tree_dirs: list[Path] = []
+    deepest = root
+    for _ in range(missing_levels):
+        tree_dirs.append(deepest)
+        deepest = deepest / "d"
+    # `deepest` is one level past the last created dir; the deepest created dir
+    # is where the temp DB probe runs (mirrors the missing parent itself).
+    deepest_dir = tree_dirs[-1] if tree_dirs else root
+
+    created: list[Path] = []
+    outcome = CacheProbeOutcome.UNUSABLE
+    db_artifacts: list[Path] = []
+    try:
+        for directory in tree_dirs:
+            try:
+                directory.mkdir(parents=False, exist_ok=False)
+                created.append(directory)
+            except OSError as error:
+                outcome = _classify_operational_error(error)
+                return CacheProbeResult(
+                    outcome,
+                    f"nearest existing ancestor could not accept the equivalent tree: {ancestor}",
+                )
+        outcome, _detail, db_artifacts = _deep_minimal_probe(deepest_dir)
+        if outcome == CacheProbeOutcome.OPERATIONAL:
+            return CacheProbeResult(
+                CacheProbeOutcome.OPERATIONAL,
+                "the cache directory is absent, but the nearest existing ancestor accepted "
+                f"the equivalent operations; exact-path creation remains unverified: {ancestor}",
+            )
+        return CacheProbeResult(
+            outcome, f"nearest existing ancestor could not accept the equivalent tree: {ancestor}"
+        )
+    finally:
+        cleanup_detail = _cleanup_paths(created + db_artifacts)
+        if cleanup_detail is not None:
+            return CacheProbeResult(CacheProbeOutcome.UNUSABLE, cleanup_detail)  # noqa: B012
+
+
+def _existing_db_probe(db_path: Path) -> CacheProbeResult:
+    """Guarded real-file probe: read-only schema check, journal guard, then BEGIN IMMEDIATE/ROLLBACK."""
+    try:
+        connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=_PROBE_TIMEOUT)
+        try:
+            connection.execute("PRAGMA schema_version")
+        finally:
+            connection.close()
+    except (sqlite3.Error, OSError) as error:
+        return CacheProbeResult(
+            _classify_operational_error(error), f"cache is not operationally usable: {db_path}"
+        )
+
+    journal = Path(str(db_path) + "-journal")
+    if journal.exists() and journal.stat().st_size > 0:
+        return CacheProbeResult(
+            CacheProbeOutcome.INCONCLUSIVE,
+            f"cache has a pending rollback journal; write probe skipped: {db_path}",
+        )
+
+    try:
+        connection = sqlite3.connect(db_path, timeout=_PROBE_TIMEOUT)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("ROLLBACK")
+        finally:
+            connection.close()
+    except (sqlite3.Error, OSError) as error:
+        return CacheProbeResult(
+            _classify_operational_error(error), f"cache is not operationally usable: {db_path}"
+        )
+    return CacheProbeResult(
+        CacheProbeOutcome.OPERATIONAL, f"write lock acquired and released: {db_path}"
+    )
+
+
+def probe_cache_operational(db_path: str) -> CacheProbeResult:
+    """Bounded, non-persistent Check-4 probe: prove the configured cache path was usable *at probe time*.
+
+    Never calls ``init_db()`` against the configured path and never persistently
+    mutates the DB, schema, contents, or parent directory. See SPEC.md §8 and the
+    doctor preflight design note for the full contract.
+    """
+    resolved = Path(db_path)
+    if resolved.exists():
+        return _existing_db_probe(resolved)
+
+    parent = resolved.parent
+    if parent.is_dir():
+        return _probe_and_cleanup(parent)
+
+    return _throwaway_ancestor_probe(parent)
 
 
 def clear_file_anidb_cache(db_path: str) -> None:

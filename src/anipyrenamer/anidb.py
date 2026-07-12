@@ -10,6 +10,7 @@ import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import hashlib
 
@@ -29,10 +30,21 @@ BURST_SIZE = 5
 PACKET_INTERVAL = 2.5
 MAX_RETRIES = 3
 RETRY_BASE_SECONDS = 0.5
+PING_TIMEOUT = 3.0
 
 _UDP_RECV_BUFFER = 65535
 MAX_FIELD_LENGTH = 200
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+PingStatus = Literal["reachable", "unreachable", "malformed", "timeout", "socket_error"]
+
+
+@dataclass(frozen=True)
+class PingOutcome:
+    """Bounded result from the unauthenticated transport reachability probe."""
+
+    status: PingStatus
+    reply_code: int | None = None
 
 
 def _redact(msg: str) -> str:
@@ -310,18 +322,69 @@ class AniDBClient:
             except Exception:
                 pass
 
+    def ping_reachability(self) -> PingOutcome:
+        """Send one plain PING and classify the bounded transport outcome.
+
+        This seam intentionally bypasses the authenticated/encrypted request path. It does not
+        inspect or mutate session state and never retries the packet.
+        """
+        sock: socket.socket | None = None
+        previous_timeout: float | None = None
+        try:
+            sock = self._ensure_socket()
+            previous_timeout = sock.gettimeout()
+            sock.settimeout(PING_TIMEOUT)
+            self._throttle()
+            sock.sendto(b"PING", (ANIDB_HOST, ANIDB_PORT))
+            data, _ = sock.recvfrom(_UDP_RECV_BUFFER)
+            reply = data.decode("utf-8", errors="replace").strip()
+            first_line = reply.split("\n", 1)[0].strip()
+            code = _extract_reply_code(reply)
+            tokens = first_line.upper().split()
+            code_index = next(
+                (
+                    index
+                    for index, token in enumerate(tokens)
+                    if token.isdigit() and len(token) == 3
+                ),
+                None,
+            )
+            if (
+                code == 300
+                and code_index is not None
+                and tokens[code_index + 1 : code_index + 2] == ["PONG"]
+            ):
+                return PingOutcome("reachable", code)
+            if code is None:
+                return PingOutcome("malformed")
+            return PingOutcome("unreachable", code)
+        except socket.timeout:
+            return PingOutcome("timeout")
+        except OSError:
+            return PingOutcome("socket_error")
+        finally:
+            if sock is not None and previous_timeout is not None:
+                try:
+                    sock.settimeout(previous_timeout)
+                except OSError:
+                    pass
+
+    def close(self) -> None:
+        """Close the UDP socket without sending a protocol packet."""
+        if self._sock:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+
     def logout(self) -> None:
         """LOGOUT and close socket. Single lightweight attempt (no full retry loop)
         so the server reliably sees LOGOUT without excessive UDP traffic."""
         if self._session and self._sock:
             self._send_recv_once(f"LOGOUT s={self._session}", timeout=5.0)
             self._session = None
-        if self._sock:
-            try:
-                self._sock.close()
-            except Exception:
-                pass
-            self._sock = None
+        self.close()
 
     def file_lookup(self, size: int, ed2k: str) -> FileInfo | None:
         """

@@ -15,12 +15,158 @@ from anipyrenamer.anidb import (
     MAX_RETRIES,
     PACKET_INTERVAL,
     RETRY_BASE_SECONDS,
+    PING_TIMEOUT,
     _UDP_RECV_BUFFER,
     _parse_file_response,
     _redact,
     _safe_int,
     _sanitize_field,
 )
+
+
+def test_ping_reachability_sends_one_plain_throttled_packet() -> None:
+    """PING uses one plain packet and the locked timeout."""
+    sent: list[bytes] = []
+    throttles: list[bool] = []
+
+    class FakeSock:
+        def __init__(self) -> None:
+            self.timeout = 15.0
+
+        def gettimeout(self) -> float:
+            return self.timeout
+
+        def settimeout(self, value: float) -> None:
+            self.timeout = value
+
+        def sendto(self, payload: bytes, addr: tuple[str, int]) -> None:  # noqa: ARG002
+            sent.append(payload)
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:  # noqa: ARG002
+            return b"300 PONG", ("api.anidb.net", 9000)
+
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    fake = FakeSock()
+    client._ensure_socket = lambda: fake  # type: ignore[method-assign]
+    client._throttle = lambda: throttles.append(True)  # type: ignore[method-assign]
+
+    outcome = client.ping_reachability()
+
+    assert outcome.status == "reachable"
+    assert outcome.reply_code == 300
+    assert sent == [b"PING"]
+    assert throttles == [True]
+    assert fake.timeout == 15.0
+
+
+def test_ping_reachability_never_encrypts_or_uses_session() -> None:
+    """PING remains plain even if a client instance carries protocol state."""
+    sent: list[bytes] = []
+
+    class FakeSock:
+        def __init__(self) -> None:
+            self.timeout = 15.0
+
+        def gettimeout(self) -> float:
+            return self.timeout
+
+        def settimeout(self, value: float) -> None:
+            self.timeout = value
+
+        def sendto(self, payload: bytes, addr: tuple[str, int]) -> None:  # noqa: ARG002
+            sent.append(payload)
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:  # noqa: ARG002
+            return b"300 PONG", ("api.anidb.net", 9000)
+
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0, api_key="secret"))
+    client._encrypted = True
+    client._aes_key = b"x" * 16
+    client._session = "session-secret"
+    client._ensure_socket = lambda: FakeSock()  # type: ignore[method-assign]
+    client._throttle = lambda: None  # type: ignore[method-assign]
+    client._aes_encrypt = lambda _: (_ for _ in ()).throw(AssertionError("encrypted PING"))  # type: ignore[method-assign]
+
+    outcome = client.ping_reachability()
+
+    assert outcome.status == "reachable"
+    assert sent == [b"PING"]
+    assert client.has_session is True
+
+
+@pytest.mark.parametrize(
+    ("reply", "status", "code"),
+    [
+        (b"500 BANNED", "unreachable", 500),
+        (b"300 NOT PONG", "unreachable", 300),
+        (b"not an AniDB reply", "malformed", None),
+    ],
+)
+def test_ping_reachability_classifies_replies(
+    reply: bytes,
+    status: str,
+    code: int | None,
+) -> None:
+    class FakeSock:
+        def __init__(self) -> None:
+            self.timeout = 15.0
+
+        def gettimeout(self) -> float:
+            return self.timeout
+
+        def settimeout(self, value: float) -> None:
+            self.timeout = value
+
+        def sendto(self, payload: bytes, addr: tuple[str, int]) -> None:  # noqa: ARG002
+            return None
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:  # noqa: ARG002
+            return reply, ("api.anidb.net", 9000)
+
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._ensure_socket = lambda: FakeSock()  # type: ignore[method-assign]
+    client._throttle = lambda: None  # type: ignore[method-assign]
+
+    outcome = client.ping_reachability()
+
+    assert outcome.status == status
+    assert outcome.reply_code == code
+
+
+def test_ping_reachability_classifies_timeout_and_socket_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class TimeoutSock:
+        def __init__(self) -> None:
+            self.timeout = 15.0
+
+        def gettimeout(self) -> float:
+            return self.timeout
+
+        def settimeout(self, value: float) -> None:
+            self.timeout = value
+
+        def sendto(self, payload: bytes, addr: tuple[str, int]) -> None:  # noqa: ARG002
+            return None
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:  # noqa: ARG002
+            raise socket.timeout("secret network detail")
+
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._ensure_socket = lambda: TimeoutSock()  # type: ignore[method-assign]
+    client._throttle = lambda: None  # type: ignore[method-assign]
+    assert client.ping_reachability().status == "timeout"
+    assert "secret network detail" not in capsys.readouterr().out
+
+    def raise_socket() -> object:
+        raise OSError("secret socket detail")
+
+    client._ensure_socket = raise_socket  # type: ignore[method-assign]
+    assert client.ping_reachability().status == "socket_error"
+
+
+def test_ping_timeout_constant() -> None:
+    assert PING_TIMEOUT == 3.0
 
 
 def test_redact_masks_pass() -> None:

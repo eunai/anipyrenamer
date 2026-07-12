@@ -7,6 +7,7 @@ This module provides best-effort helpers:
 
 from __future__ import annotations
 
+import ntpath
 import os
 import stat
 import sys
@@ -52,14 +53,25 @@ def warn_if_shared_directory_windows(path: str | Path) -> None:
 
     if sys.platform != "win32":
         return
-    resolved = os.path.abspath(str(path))
+    resolved = ntpath.abspath(str(path))
     user_profile = os.environ.get("USERPROFILE", "")
     appdata = os.environ.get("APPDATA", "")
-    if user_profile and resolved.startswith(os.path.abspath(user_profile)):
+    if user_profile and _is_within_directory(resolved, user_profile):
         return
-    if appdata and resolved.startswith(os.path.abspath(appdata)):
+    if appdata and _is_within_directory(resolved, appdata):
         return
     warnings.warn(
         f"{path} is not under the user profile directory. Ensure NTFS ACLs restrict access.",
         stacklevel=2,
     )
+
+
+def _is_within_directory(path: str | Path, directory: str | Path) -> bool:
+    """Return whether a path is under a directory using Windows path semantics."""
+    normalized_path = ntpath.normcase(ntpath.abspath(str(path)))
+    normalized_directory = ntpath.normcase(ntpath.abspath(str(directory)))
+    try:
+        return ntpath.commonpath((normalized_path, normalized_directory)) == normalized_directory
+    except ValueError:
+        # Different Windows drives (or malformed paths) are never contained.
+        return False

@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from anipyrenamer.permissions import ensure_owner_only, warn_if_shared_directory_windows, warn_if_world_readable
+from anipyrenamer.permissions import (
+    _is_within_directory,
+    ensure_owner_only,
+    warn_if_shared_directory_windows,
+    warn_if_world_readable,
+)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits not meaningful on Windows")
@@ -38,3 +43,26 @@ def test_windows_shared_dir_warning_is_noop_on_non_windows(tmp_path: Path) -> No
             warn_if_shared_directory_windows(tmp_path / "secret.txt")
         assert w == []
 
+
+@pytest.mark.parametrize(
+    ("candidate", "directory", "contained"),
+    [
+        (r"C:\Users\Francis\Documents\.env", r"C:\Users\Francis", True),
+        (r"C:\Users\FrancisEvil\Documents\.env", r"C:\Users\Francis", False),
+        (r"c:\users\francis\documents\.env", r"C:\Users\Francis", True),
+        (r"D:\Users\Francis\Documents\.env", r"C:\Users\Francis", False),
+        (r"\\server\share\Users\Francis\Documents\.env", r"C:\Users\Francis", False),
+        (
+            r"\\server\share\users\francis\documents\.env",
+            r"\\server\share\Users\Francis",
+            True,
+        ),
+    ],
+)
+def test_windows_containment_is_host_independent(
+    candidate: str,
+    directory: str,
+    contained: bool,
+) -> None:
+    """Windows semantics are tested directly, independent of the host os.path."""
+    assert _is_within_directory(candidate, directory) is contained
