@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-12
+
+### Added
+
+- Added `anipyrenamer --doctor`, a standalone preflight report for `.env` discovery, AniDB credential presence, encryption posture, cache readiness, and AniDB UDP transport reachability. It is diagnose-only: it does not scan, hash, rename, update MyList, authenticate, or modify the cache. Output redacts values; `--offline` skips only the network check. (#33)
+
 ### Fixed
 
 - The warning about a world-readable `.env` now checks the resolved path returned by dotenv discovery, including a parent-directory `.env`, instead of always checking a `.env` in the current directory. Previously the warning could inspect the wrong file — or none — and miss an exposed `.env` in use. The well-known config-directory path continues to be checked separately. The warning names paths only, never file contents. (#39)

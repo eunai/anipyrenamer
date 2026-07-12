@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anipyrenamer"
-version = "2.1.0"
+version = "2.2.0"
 description = "Rename anime files using ED2K hash and AniDB."
 readme = "README.md"
 license = "MIT"
