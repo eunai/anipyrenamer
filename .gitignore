@@ -19,6 +19,10 @@ htmlcov/
 external_docs/
 .publish-staging
 
+# Project-local agent tooling
+.agents/
+.claude/
+
 # Cursor local metadata — keep committed rules and project skills only
 .cursor/*
 !.cursor/rules/
@@ -30,6 +34,5 @@ debug-*.log
 # Public-only additional exclusions: private AI tooling, internal docs,
 # and dev scratch must never appear here.
 .cursor/
-.claude/
 AGENTS.md
 docs/internal/
