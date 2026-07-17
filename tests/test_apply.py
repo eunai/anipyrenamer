@@ -1,45 +1,12 @@
-"""Tests for preview and apply."""
+"""Tests for apply. (Plan preview rendering moved to the ledger — see test_ledger.py, #51.)"""
 
 from __future__ import annotations
 from pathlib import Path
 
 import pytest
 
-from anipyrenamer.apply import _plan_sort_key, apply_plan, preview_plan
+from anipyrenamer.apply import apply_plan
 from anipyrenamer.models import RenameItem, RenameKind
-
-
-def test_preview_plan_no_crash(capsys: pytest.CaptureFixture[str]) -> None:
-    items = [RenameItem("/a/x.mkv", "/b/y.mkv")]
-    preview_plan(items)
-    # Rich prints to console; just ensure no exception
-    assert True
-
-
-def test_preview_plan_with_skip_item_no_crash(capsys: pytest.CaptureFixture[str]) -> None:
-    """Preview table includes SKIP items (AniDB lookup failed) without crashing."""
-    items = [
-        RenameItem("/path/to/video.mkv", "(AniDB lookup failed)", kind=RenameKind.SKIP),
-    ]
-    preview_plan(items)
-    assert True
-
-
-def test_preview_plan_sorted_by_folder_then_episode() -> None:
-    """Preview table order is by destination folder (case-insensitive) then episode number."""
-    items = [
-        RenameItem("/any/222222.mkv", "/anime/Dan Da Dan [Subs]/Dan Da Dan 01 - First [Subs].mkv"),
-        RenameItem("/any/11.mkv", "/anime/Blue Lock [SEV]/Blue Lock 02 - Monster [SEV].mkv"),
-        RenameItem("/any/other.mkv", "/anime/Blue Lock [SEV]/Blue Lock 01 - Dream [SEV].mkv"),
-        RenameItem("/any/x.mkv", "/anime/Nana [EMBER]/Nana 01 - Prologue [EMBER].mkv"),
-    ]
-    ordered = sorted(items, key=_plan_sort_key)
-    new_paths = [item.new_path for item in ordered]
-    # Blue Lock (01 then 02), then Dan Da Dan 01, then Nana 01
-    assert "Blue Lock 01" in new_paths[0]
-    assert "Blue Lock 02" in new_paths[1]
-    assert "Dan Da Dan 01" in new_paths[2]
-    assert "Nana 01" in new_paths[3]
 
 
 def test_apply_plan_dry_run_does_nothing(tmp_path: Path) -> None:
@@ -118,6 +85,50 @@ def test_apply_plan_skips_when_destination_exists(tmp_path: Path) -> None:
     apply_plan(items, str(db), dry_run=False)
     assert src.exists()
     assert existing.read_bytes() == b"existing"
+
+
+def test_apply_plan_returns_skip_reason_breakdown(tmp_path: Path) -> None:
+    """apply_plan reports WHY items were skipped: destination-exists vs source-missing (SPEC §5).
+
+    The breakdown reconciles: applied + skipped_destination_exists +
+    skipped_source_missing == attempted FILE items.
+    """
+    from anipyrenamer.cache import init_db
+
+    movable = tmp_path / "movable.mkv"
+    movable.write_bytes(b"a")
+    blocked = tmp_path / "blocked.mkv"
+    blocked.write_bytes(b"b")
+    occupied = tmp_path / "occupied.mkv"
+    occupied.write_bytes(b"existing")
+    gone = tmp_path / "gone.mkv"  # never created: source missing
+    db = tmp_path / "cache.sqlite"
+    init_db(str(db))
+    items = [
+        RenameItem(str(movable), str(tmp_path / "moved.mkv"), kind=RenameKind.FILE),
+        RenameItem(str(blocked), str(occupied), kind=RenameKind.FILE),
+        RenameItem(str(gone), str(tmp_path / "never.mkv"), kind=RenameKind.FILE),
+    ]
+    result = apply_plan(items, str(db), dry_run=False)
+    assert result.applied == 1
+    assert result.skipped_destination_exists == 1
+    assert result.skipped_source_missing == 1
+    assert result.skipped_total == 2
+    assert result.applied + result.skipped_total == 3
+
+
+def test_apply_plan_dry_run_breakdown_is_all_zero(tmp_path: Path) -> None:
+    """dry_run returns a zeroed breakdown and performs no moves."""
+    src = tmp_path / "orig.mkv"
+    src.write_bytes(b"data")
+    items = [RenameItem(str(src), str(tmp_path / "new.mkv"))]
+    result = apply_plan(items, str(tmp_path / "db.sqlite"), dry_run=True)
+    assert (result.applied, result.skipped_destination_exists, result.skipped_source_missing) == (
+        0,
+        0,
+        0,
+    )
+    assert src.exists()
 
 
 def test_apply_plan_chdir_parent_when_cwd_matches_source_dir(

@@ -1,4 +1,4 @@
-"""CLI: discover, hash, lookup, plan, preview, apply (dry-run / Y/n). Rich UI: progress bars, headings, Warnings panel."""
+"""CLI: discover, hash, lookup, plan, preview, apply (dry-run / Y/n). Output: the Quiet Ledger stream + run-summary footer (ledger.py)."""
 
 from __future__ import annotations
 
@@ -12,22 +12,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from dotenv import find_dotenv, load_dotenv
-from rich.console import Console, Group
-from rich.live import Live
+from rich.console import Console
 from rich.panel import Panel
 from rich.markup import escape as rich_escape
-from rich.progress import (
-    BarColumn,
-    DownloadColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-    TransferSpeedColumn,
-)
 
-from anipyrenamer.apply import apply_plan, preview_plan
+from anipyrenamer.apply import apply_plan
 from anipyrenamer.cache import (
     CacheOutcome,
     clear_file_anidb_cache,
@@ -41,6 +30,7 @@ from anipyrenamer.conflicts import resolve_destination_conflicts
 from anipyrenamer.discovery import discover, get_file_size
 from anipyrenamer.doctor import run_doctor
 from anipyrenamer.ed2k import compute_ed2k
+from anipyrenamer.ledger import Ledger, RunOutcome
 from anipyrenamer.models import DiscoveredGroup, FileInfo, RenameItem, RenameKind
 from anipyrenamer.mylist import run_mylist_wizard
 from anipyrenamer.naming import DEFAULT_FILE_TEMPLATE, DEFAULT_FOLDER_TEMPLATE
@@ -413,33 +403,29 @@ def main() -> None:
         sys.exit(0)
 
     console = Console()
+    ledger = Ledger(console)
     db_path = get_db_path(args.db)
     init_db(db_path)
     if args.clear_cache_all:
         clear_file_anidb_cache(db_path)
         console.print("[dim]Entire AniDB file cache cleared.[/dim]")
 
-    console.print("[bold]Discovery[/bold]")
     groups = discover(args.paths)
     _LOG.info("phase=discovery group_count=%d", len(groups))
+    ledger.discover(len(groups))
     if not groups:
         console.print("[yellow]No video files found.[/yellow]")
-        sys.exit(0)
+        ledger.footer(RunOutcome.NO_MATCHES)
+        sys.exit(RunOutcome.NO_MATCHES.exit_code)
 
     precomputed_hashes: dict[str, tuple[int, str]] = {}
     if args.clear_cache:
+        # Silent prehash (no transient Progress on the ledger path, SPEC §3).
         entries: list[tuple[int, str]] = []
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Clearing cache for scanned files…", total=len(groups))
-            for group in groups:
-                _, size, ed2k = _hash_group(group)
-                entries.append((size, ed2k))
-                precomputed_hashes[group.video_path] = (size, ed2k)
-                progress.advance(task)
+        for group in groups:
+            _, size, ed2k = _hash_group(group)
+            entries.append((size, ed2k))
+            precomputed_hashes[group.video_path] = (size, ed2k)
         n = clear_file_anidb_entries(db_path, entries)
         console.print(f"[dim]Cleared AniDB cache for {n} file(s) in this scan.[/dim]")
 
@@ -515,10 +501,12 @@ def main() -> None:
 
     try:
         _run_after_anidb_ready(
-            args, client, had_session, console, db_path, groups, precomputed_hashes
+            args, client, had_session, console, ledger, db_path, groups, precomputed_hashes
         )
     except KeyboardInterrupt:
-        sys.exit(EXIT_INTERRUPTED)
+        # Degraded interrupt form: the verdict line alone (SPEC §3/§4).
+        ledger.verdict_only(RunOutcome.INTERRUPTED)
+        sys.exit(RunOutcome.INTERRUPTED.exit_code)
 
 
 def _run_after_anidb_ready(
@@ -526,13 +514,16 @@ def _run_after_anidb_ready(
     client: Any,
     had_session: bool,
     console: Console,
+    ledger: Ledger,
     db_path: str,
     groups: list[Any],
     precomputed_hashes: dict[str, tuple[int, str]],
 ) -> None:
     """Run hashing, lookup, plan, preview, apply. Guarantees AniDB logout in finally."""
     try:
-        _do_hashing_lookup_plan_apply(args, client, console, db_path, groups, precomputed_hashes)
+        _do_hashing_lookup_plan_apply(
+            args, client, console, ledger, db_path, groups, precomputed_hashes
+        )
     finally:
         _disconnect_anidb(client, console, had_session)
 
@@ -541,176 +532,135 @@ def _do_hashing_lookup_plan_apply(
     args: argparse.Namespace,
     client: Any,
     console: Console,
+    ledger: Ledger,
     db_path: str,
     groups: list[Any],
     precomputed_hashes: dict[str, tuple[int, str]],
 ) -> None:
     """Hashing and lookup, then plan, preview, and optionally apply."""
-    console.print("[bold]Hashing and lookup[/bold]")
     _LOG.info("phase=hash_lookup group_count=%d", len(groups))
     all_items: list[tuple[list[RenameItem], str]] = []  # (items, batch_id placeholder)
     resolved_infos: list[FileInfo] = []
-    # Overall: bar only (no ETA at top). Per-file: one row during hashing (current file).
-    progress_overall = Progress(
-        SpinnerColumn(),
-        BarColumn(bar_width=24, style="blue", complete_style="green"),
-        TextColumn("[progress.description]{task.description}"),
-        TimeElapsedColumn(),
-        console=console,
-    )
-    progress_file = Progress(
-        SpinnerColumn(),
-        BarColumn(bar_width=28, style="bright_magenta", complete_style="green"),
-        TextColumn("[progress.description]{task.description}"),
-        DownloadColumn(),
-        TransferSpeedColumn(),
-        TimeRemainingColumn(compact=True),
-        console=console,
-    )
-    overall_task = progress_overall.add_task(
-        f"Hashing and lookup 0/{len(groups)}",
-        total=len(groups),
-    )
-    group_render = Group(progress_overall, progress_file)
 
     max_consecutive_timeouts = 3
     consecutive_timeouts = 0
     anidb_aborted = False
+    cached_count = 0
+    fetched_count = 0
+    no_match_count = 0
 
-    with Live(group_render, console=console, refresh_per_second=8) as live:
-        for i, group in enumerate(groups):
-            path_str = str(group.video_path)
-            basename = Path(path_str).name
-            lookup_source: str | None = None
-            cached_hash = precomputed_hashes.get(group.video_path)
-            if cached_hash is not None:
-                size, ed2k = cached_hash
-            else:
-                size = get_file_size(group.video_path)
-                file_task = progress_file.add_task(
-                    f"[yellow]{rich_escape(Path(group.video_path).name)}[/yellow]",
-                    total=max(1, size),
-                    completed=0,
-                )
-
-                def _on_progress(br: int, tot: int) -> None:
-                    progress_file.update(file_task, completed=br, total=max(1, tot))
-                    live.refresh()
-
-                ed2k = compute_ed2k(group.video_path, progress_callback=_on_progress)
-                progress_file.remove_task(file_task)
-            lookup = get_usable_file_info(
-                db_path, size, ed2k, refresh=args.refresh_cache, allow_refetch=client is not None
+    # Intentionally silent during hash+look (SPEC §3): per-file chatter collapses
+    # into the settled counter line below; only --debug cache lines and error
+    # lines print inline. No transient Live/Progress on the ledger path.
+    for group in groups:
+        path_str = str(group.video_path)
+        basename = Path(path_str).name
+        lookup_source: str | None = None
+        cached_hash = precomputed_hashes.get(group.video_path)
+        if cached_hash is not None:
+            size, ed2k = cached_hash
+        else:
+            size = get_file_size(group.video_path)
+            ed2k = compute_ed2k(group.video_path)
+        lookup = get_usable_file_info(
+            db_path, size, ed2k, refresh=args.refresh_cache, allow_refetch=client is not None
+        )
+        info = lookup.info
+        if lookup.outcome is not CacheOutcome.MISS and args.debug:
+            console.print(
+                f"[dim][debug] Using cached AniDB data for size={size} ed2k={ed2k[:16]}…[/dim]"
             )
-            info = lookup.info
-            if lookup.outcome is not CacheOutcome.MISS and args.debug:
-                console.print(
-                    f"[dim][debug] Using cached AniDB data for size={size} ed2k={ed2k[:16]}…[/dim]"
-                )
-            if lookup.outcome is CacheOutcome.REPAIR and args.debug:
-                console.print(
-                    "[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]"
-                )
-            if info is not None:
-                lookup_source = "cache"
-                console.print(
-                    f"[blue]📁 Using local cache for {rich_escape(path_str)}[/blue] "
-                    "(use [bold]--clear-cache[/bold] to refetch from AniDB)"
-                )
-            if info is None and client and not anidb_aborted:
-                try:
+        if lookup.outcome is CacheOutcome.REPAIR and args.debug:
+            console.print("[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]")
+        if info is not None:
+            lookup_source = "cache"
+            cached_count += 1
+        if info is None and client and not anidb_aborted:
+            try:
+                info = client.file_lookup(size, ed2k)
+                if info is not None:
+                    lookup_source = "anidb"
+                if info is None and not client.has_session:
+                    client.login()
                     info = client.file_lookup(size, ed2k)
                     if info is not None:
                         lookup_source = "anidb"
-                    if info is None and not client.has_session:
-                        client.login()
-                        info = client.file_lookup(size, ed2k)
-                        if info is not None:
-                            lookup_source = "anidb"
-                    consecutive_timeouts = 0
-                except TimeoutError:
-                    consecutive_timeouts += 1
+                consecutive_timeouts = 0
+            except TimeoutError:
+                consecutive_timeouts += 1
+                console.print(
+                    f"[red]AniDB lookup timed out for {rich_escape(path_str)}; skipping.[/red]"
+                )
+                if consecutive_timeouts >= max_consecutive_timeouts:
                     console.print(
-                        f"[red]AniDB lookup timed out for {rich_escape(path_str)}; skipping.[/red]"
+                        f"[red]{max_consecutive_timeouts} consecutive AniDB timeouts; "
+                        "skipping remaining AniDB lookups.[/red] "
+                        "Try again later or use [bold]--offline[/bold] to use cache only."
                     )
-                    if consecutive_timeouts >= max_consecutive_timeouts:
-                        console.print(
-                            f"[red]{max_consecutive_timeouts} consecutive AniDB timeouts; "
-                            "skipping remaining AniDB lookups.[/red] "
-                            "Try again later or use [bold]--offline[/bold] to use cache only."
-                        )
-                        anidb_aborted = True
-                if info is not None:
-                    set_file_info(db_path, info)
-                    console.print(
-                        f"[green]🌐 Fetched from AniDB for {rich_escape(path_str)}[/green]"
-                    )
-            if info is None:
-                _LOG.info(
-                    "phase=lookup basename=%s fid=0 lookup_source=%s",
-                    basename,
-                    lookup_source if lookup_source is not None else "skip",
-                )
-                skip_item = RenameItem(
-                    old_path=group.video_path,
-                    new_path="(AniDB lookup failed)",
-                    kind=RenameKind.SKIP,
-                    anime_type="",
-                )
-                all_items.append(([skip_item], group.video_path))
-                progress_overall.advance(overall_task)
-                progress_overall.update(
-                    overall_task,
-                    description=f"Hashing and lookup {i + 1}/{len(groups)}",
-                )
-                continue
-            assert lookup_source is not None
+                    anidb_aborted = True
+            if info is not None:
+                set_file_info(db_path, info)
+                fetched_count += 1
+        if info is None:
+            no_match_count += 1
             _LOG.info(
-                "phase=lookup basename=%s fid=%d lookup_source=%s",
+                "phase=lookup basename=%s fid=0 lookup_source=%s",
                 basename,
-                info.fid,
-                lookup_source,
+                lookup_source if lookup_source is not None else "skip",
             )
-            use_folder = args.folder or args.plex
-            folder_tpl: str | None = None
-            if use_folder:
-                folder_tpl = args.folder_template
-                if args.plex:
-                    folder_tpl = _apply_plex_suffix(folder_tpl)
-            items = build_plan(group, info, args.template, args.dest, folder_template=folder_tpl)
-            all_items.append((items, group.video_path))
-            resolved_infos.append(info)
-            progress_overall.advance(overall_task)
-            progress_overall.update(
-                overall_task,
-                description=f"Hashing and lookup {i + 1}/{len(groups)}",
+            skip_item = RenameItem(
+                old_path=group.video_path,
+                new_path="(AniDB lookup failed)",
+                kind=RenameKind.SKIP,
+                anime_type="",
             )
+            all_items.append(([skip_item], group.video_path))
+            continue
+        assert lookup_source is not None
+        _LOG.info(
+            "phase=lookup basename=%s fid=%d lookup_source=%s",
+            basename,
+            info.fid,
+            lookup_source,
+        )
+        use_folder = args.folder or args.plex
+        folder_tpl: str | None = None
+        if use_folder:
+            folder_tpl = args.folder_template
+            if args.plex:
+                folder_tpl = _apply_plex_suffix(folder_tpl)
+        items = build_plan(group, info, args.template, args.dest, folder_template=folder_tpl)
+        all_items.append((items, group.video_path))
+        resolved_infos.append(info)
+
+    ledger.hash_lookup(cached=cached_count, fetched=fetched_count, no_match=no_match_count)
 
     flat_items, folder_conflicts = flatten_and_validate_folder_renames(all_items)
     if not flat_items:
         console.print("[yellow]No video files found.[/yellow]")
-        sys.exit(0)
+        ledger.footer(RunOutcome.NO_MATCHES)
+        sys.exit(RunOutcome.NO_MATCHES.exit_code)
 
     resolution = resolve_destination_conflicts(
         flat_items, policy=args.on_conflict, strategy=args.name_dedupe
     )
     flat_items = resolution.plan
-    dest_conflicts = resolution.warnings
     conflict_indexes = resolution.conflict_indexes
-    warnings: list[str] = []
-    for msg in folder_conflicts:
-        warnings.append(f"[yellow]{msg}[/yellow]")
-    for msg in dest_conflicts:
-        warnings.append(f"[dim]{msg}[/dim]")
-    if warnings:
-        console.print(Panel("\n".join(warnings), title="Warnings", border_style="yellow"))
-
-    console.print("[bold]Rename plan[/bold]")
     _LOG.info(
         "phase=plan item_count=%d dry_run=%s preview_format=%s",
         len(flat_items),
         args.dry_run,
         args.preview_format,
+    )
+    # The plan block replaces the Warnings panel and the Rich-Table preview:
+    # folder conflicts render as inline warning lines, destination conflicts as
+    # flagged plan lines (SPEC §3). json mode keeps its plan dump unchanged.
+    ledger.plan(
+        flat_items,
+        conflict_indexes=conflict_indexes,
+        folder_conflicts=folder_conflicts,
+        dry_run=args.dry_run,
+        render_block=args.preview_format != "json",
     )
     if args.preview_format == "json":
         preview_items = [
@@ -723,32 +673,39 @@ def _do_hashing_lookup_plan_apply(
             for item in flat_items
         ]
         console.print_json(json.dumps(preview_items))
-    else:
-        preview_plan(flat_items, console=console)
 
     if resolution.should_fail:
-        console.print("[red]Aborted due to destination conflicts (--on-conflict=fail).[/red]")
-        sys.exit(1)
+        # Post-plan fatal abort: degraded to the verdict line only (SPEC §3).
+        ledger.verdict_only(RunOutcome.CONFLICT_FAIL_ABORT)
+        sys.exit(RunOutcome.CONFLICT_FAIL_ABORT.exit_code)
 
     file_items_count = sum(1 for i in flat_items if i.kind == RenameKind.FILE)
     if file_items_count == 0:
         console.print("[yellow]No renames to apply (AniDB lookup failed for all files).[/yellow]")
-        sys.exit(0)
+        ledger.footer(RunOutcome.NO_MATCHES)
+        sys.exit(RunOutcome.NO_MATCHES.exit_code)
 
     if args.dry_run:
         _LOG.info("phase=apply dry_run=yes file_operations=%d", file_items_count)
-        console.print("[green]Dry run; no files changed.[/green]")
         plan_skips = sum(1 for i in flat_items if i.kind == RenameKind.SKIP)
-        exit_code = EXIT_PARTIAL if plan_skips > 0 or conflict_indexes else 0
-        sys.exit(
-            _run_mylist_if_requested(
-                args=args,
-                client=client,
-                console=console,
-                resolved_infos=resolved_infos,
-                exit_code=exit_code,
-            )
+        dry_run_partial = plan_skips > 0 or bool(conflict_indexes)
+        exit_code = EXIT_PARTIAL if dry_run_partial else 0
+        final_exit = _run_mylist_if_requested(
+            args=args,
+            client=client,
+            console=console,
+            ledger=ledger,
+            resolved_infos=resolved_infos,
+            exit_code=exit_code,
         )
+        if final_exit == 0:
+            outcome = RunOutcome.DRY_RUN_CLEAN
+        elif dry_run_partial:
+            outcome = RunOutcome.DRY_RUN_CONFLICTS
+        else:
+            outcome = RunOutcome.MYLIST_FAILED
+        ledger.footer(outcome)
+        sys.exit(final_exit)
 
     do_apply = args.yes
     if not do_apply:
@@ -756,75 +713,58 @@ def _do_hashing_lookup_plan_apply(
         do_apply = reply in ("y", "a")
 
     if not do_apply:
-        console.print("[red]Aborted.[/red]")
-        sys.exit(
-            _run_mylist_if_requested(
-                args=args,
-                client=client,
-                console=console,
-                resolved_infos=resolved_infos,
-                exit_code=0,
-            )
-        )
-
-    console.print("[bold]Apply[/bold]")
-    file_items = [i for i in flat_items if i.kind == RenameKind.FILE]
-    total_apply = len(file_items)
-    _LOG.info("phase=apply dry_run=no file_operations=%d", total_apply)
-    # One overall bar (Renaming N/M) only; no per-file line.
-    progress_apply_overall = Progress(
-        SpinnerColumn(),
-        BarColumn(bar_width=24, style="blue", complete_style="green"),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    )
-    overall_apply_task = progress_apply_overall.add_task(
-        f"Renaming 0/{total_apply}",
-        total=total_apply,
-    )
-
-    def apply_progress(idx: int, total: int, item: RenameItem, skipped: bool | None) -> None:
-        if skipped is None:
-            progress_apply_overall.update(
-                overall_apply_task,
-                description=f"Renaming {idx - 1}/{total}",
-            )
-            if live_apply_ref[0] is not None:
-                live_apply_ref[0].refresh()
-        else:
-            progress_apply_overall.advance(overall_apply_task)
-            progress_apply_overall.update(
-                overall_apply_task,
-                description=f"Renaming {idx}/{total}",
-            )
-            if live_apply_ref[0] is not None:
-                live_apply_ref[0].refresh()
-
-    live_apply_ref: list[Live | None] = [None]
-    apply_group = Group(progress_apply_overall)
-    with Live(apply_group, console=console, refresh_per_second=8) as live_apply:
-        live_apply_ref[0] = live_apply
-        applied_count, skipped_count = apply_plan(
-            flat_items,
-            db_path,
-            dry_run=False,
-            progress_callback=apply_progress,
-        )
-    console.print("[green]Renames applied.[/green]")
-    # Exit 2 when there were skips (plan skips or apply skips) per spec §6
-    plan_skips = sum(1 for i in flat_items if i.kind == RenameKind.SKIP)
-    exit_code = 0
-    if plan_skips > 0 or skipped_count > 0:
-        exit_code = EXIT_PARTIAL
-    sys.exit(
-        _run_mylist_if_requested(
+        ledger.declined()
+        final_exit = _run_mylist_if_requested(
             args=args,
             client=client,
             console=console,
+            ledger=ledger,
             resolved_infos=resolved_infos,
-            exit_code=exit_code,
+            exit_code=0,
         )
+        outcome = RunOutcome.DECLINED if final_exit == 0 else RunOutcome.MYLIST_FAILED
+        ledger.footer(outcome)
+        sys.exit(final_exit)
+
+    file_items = [i for i in flat_items if i.kind == RenameKind.FILE]
+    _LOG.info("phase=apply dry_run=no file_operations=%d", len(file_items))
+    # Silent during apply (SPEC §3): no transient Live/Progress on the ledger
+    # path; the settled apply counter row is the phase's one permanent line.
+    result = apply_plan(flat_items, db_path, dry_run=False)
+    ledger.apply(
+        renamed=result.applied,
+        dest_exists=result.skipped_destination_exists,
+        source_missing=result.skipped_source_missing,
     )
+    # Exit 2 when there were skips (plan skips or apply skips) per spec §6
+    plan_skips = sum(1 for i in flat_items if i.kind == RenameKind.SKIP)
+    had_skips = plan_skips > 0 or result.skipped_total > 0
+    exit_code = EXIT_PARTIAL if had_skips else 0
+    # MyList runs before the footer so a mylist row and the recap are truthful.
+    final_exit = _run_mylist_if_requested(
+        args=args,
+        client=client,
+        console=console,
+        ledger=ledger,
+        resolved_infos=resolved_infos,
+        exit_code=exit_code,
+    )
+    ledger.footer(_applied_outcome(final_exit, had_skips=had_skips))
+    sys.exit(final_exit)
+
+
+def _applied_outcome(final_exit: int, *, had_skips: bool) -> RunOutcome:
+    """Map an applied run's final exit code to its footer verdict (SPEC §4).
+
+    exit ``0`` → applied clean; exit ``2`` with skips → completed with skips;
+    exit ``2`` with no skips → the MyList-failure lift (renames applied, some
+    MyList updates failed).
+    """
+    if final_exit == 0:
+        return RunOutcome.APPLIED_CLEAN
+    if had_skips:
+        return RunOutcome.APPLIED_WITH_SKIPS
+    return RunOutcome.MYLIST_FAILED
 
 
 def _run_mylist_if_requested(
@@ -832,6 +772,7 @@ def _run_mylist_if_requested(
     args: argparse.Namespace,
     client: Any,
     console: Console,
+    ledger: Ledger,
     resolved_infos: list[FileInfo],
     exit_code: int,
 ) -> int:
@@ -844,6 +785,7 @@ def _run_mylist_if_requested(
         file_infos=resolved_infos,
         confirm=_prompt_yes_no,
     )
+    ledger.mylist(mylist_result.applied)
     if mylist_result.attempted and mylist_result.failed > 0 and exit_code == 0:
         return EXIT_PARTIAL
     return exit_code

@@ -135,8 +135,8 @@ def test_cli_no_paths_exits_zero() -> None:
         sys.argv = orig_argv
 
 
-def test_cli_dry_run_empty_dir(tmp_path: Path) -> None:
-    """Running with --dry-run on dir with no videos exits 0 (no renames)."""
+def test_cli_dry_run_empty_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Running with --dry-run on dir with no videos exits 0 with the trivial footer verdict."""
     orig_argv = sys.argv
     try:
         sys.argv = ["anipyrenamer", str(tmp_path), "--dry-run"]
@@ -146,6 +146,8 @@ def test_cli_dry_run_empty_dir(tmp_path: Path) -> None:
         assert e.code == 0
     finally:
         sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert "exit 0 · no files to rename" in out  # trivial paths still footer (SPEC §3)
 
 
 def test_cli_structured_log_file_writes_phases(tmp_path: Path) -> None:
@@ -205,7 +207,7 @@ def test_cli_structured_log_file_writes_phases(tmp_path: Path) -> None:
 
 
 def test_cli_keyboard_interrupt_calls_logout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """On KeyboardInterrupt during hashing/lookup, AniDB client logout is called and exit is 130."""
     (tmp_path / "a.mkv").write_bytes(b"x")
@@ -228,6 +230,7 @@ def test_cli_keyboard_interrupt_calls_logout(
             mock_client.logout.assert_called()
     finally:
         sys.argv = orig_argv
+    assert "exit 130 · interrupted" in capsys.readouterr().out  # degraded verdict line
 
 
 def test_apply_plex_suffix_default_template() -> None:
@@ -576,6 +579,7 @@ def test_cli_mylist_invokes_wizard_on_dry_run(monkeypatch: pytest.MonkeyPatch) -
 
     class _Result:
         attempted = False
+        applied = 0
         failed = 0
 
     def _fake_wizard(*, console, client, file_infos, confirm):  # noqa: ANN001, ARG001
@@ -630,6 +634,7 @@ def test_mylist_cli_passes_yes_no_confirm(monkeypatch: pytest.MonkeyPatch) -> No
 
     class _Result:
         attempted = False
+        applied = 0
         failed = 0
 
     def _fake_wizard(*, console, client, file_infos, confirm):  # noqa: ANN001, ARG001
@@ -804,9 +809,11 @@ def test_rename_apply_keeps_yna_confirm(monkeypatch: pytest.MonkeyPatch) -> None
 
     apply_called = {"value": False}
 
-    def _fake_apply_plan(items, db_path, *, dry_run, progress_callback):  # noqa: ANN001, ARG001
+    def _fake_apply_plan(items, db_path, *, dry_run):  # noqa: ANN001, ARG001
+        from anipyrenamer.apply import ApplyResult
+
         apply_called["value"] = True
-        return (1, 0)
+        return ApplyResult(applied=1, skipped_destination_exists=0, skipped_source_missing=0)
 
     orig_argv = sys.argv
     try:
@@ -968,8 +975,13 @@ def test_single_file_main_thread_hash(monkeypatch: pytest.MonkeyPatch) -> None:
         sys.argv = orig_argv
 
 
-def test_cli_hashing_progress_row_uses_filename_only(tmp_path: Path) -> None:
-    """Yellow per-file hashing row shows basename only, not parent directory names."""
+def test_cli_hashing_creates_no_transient_progress(tmp_path: Path) -> None:
+    """Hash+look is silent until its counter settles: no transient Progress task (SPEC §3).
+
+    Supersedes the per-file "hashing row shows basename only" pin (#51): the
+    ledger path has no per-file hashing row at all, so no Progress task may be
+    created during a dry-run hash+look at all.
+    """
     from rich.progress import Progress
 
     ancestor = tmp_path / "ancestor" / "deep"
@@ -1006,7 +1018,7 @@ def test_cli_hashing_progress_row_uses_filename_only(tmp_path: Path) -> None:
         sys.argv = ["anipyrenamer", str(tmp_path), "--dry-run", "--offline"]
         with (
             patch("anipyrenamer.cli.discover", return_value=groups),
-            patch("anipyrenamer.cli.Progress.add_task", capture_add_task),
+            patch("rich.progress.Progress.add_task", capture_add_task),
             patch("anipyrenamer.cli.get_file_size", return_value=10),
             patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
             patch("anipyrenamer.cache.get_file_info", return_value=info),
@@ -1021,11 +1033,7 @@ def test_cli_hashing_progress_row_uses_filename_only(tmp_path: Path) -> None:
     finally:
         sys.argv = orig_argv
 
-    yellow_tasks = [d for d in descriptions if "[yellow]" in d]
-    assert yellow_tasks
-    assert all("ancestor" not in d for d in yellow_tasks)
-    assert all("deep" not in d for d in yellow_tasks)
-    assert all("episode.mkv" in d for d in yellow_tasks)
+    assert descriptions == []
 
 
 def test_clear_cache_uses_shared_hashing_helper(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1111,6 +1119,12 @@ def test_keyboard_interrupt_during_hashing(tmp_path: Path, monkeypatch: pytest.M
 # and bad-cache repair branches BEFORE they move into cache.py. They must
 # pass unchanged before and after the seam lands — do not edit them as part
 # of that refactor.
+#
+# #51 (output redesign): the per-file cache/fetch chatter lines these tests
+# once matched were collapsed into the `hash+look` counter row by the Quiet
+# Ledger (SPEC §3), so the *output* assertions now target that row. The
+# behavioral oracle — lookup traffic, --debug line order, log lines — is
+# unchanged.
 # ---------------------------------------------------------------------------
 
 
@@ -1206,7 +1220,7 @@ def test_cli_refresh_cache_bypasses_cached_entry(
     finally:
         sys.argv = orig_argv
     out = capsys.readouterr().out
-    assert "Fetched from AniDB" in out
+    assert "  hash+look   0 cached · 1 fetched · 0 no match" in out
     assert "Using cached AniDB data" not in out  # refresh discards before the debug hit line
     assert "Cached title looks like hash" not in out
     assert "fid=99 lookup_source=anidb" in log.read_text(encoding="utf-8")
@@ -1262,7 +1276,7 @@ def test_cli_hash_looking_cached_title_repairs_with_both_debug_lines(
     assert hit_idx != -1, "expected the cache-hit debug line on the repair path"
     assert repair_idx != -1, "expected the repair debug line"
     assert hit_idx < repair_idx, "hit line must precede repair line (current CLI order)"
-    assert "Fetched from AniDB" in out
+    assert "  hash+look   0 cached · 1 fetched · 0 no match" in out
     assert "fid=99 lookup_source=anidb" in log.read_text(encoding="utf-8")
 
 
@@ -1290,7 +1304,7 @@ def test_cli_offline_keeps_hash_looking_cached_entry(
         sys.argv = orig_argv
     out = capsys.readouterr().out
     assert "Using cached AniDB data" in out
-    assert "Using local cache" in out
+    assert "  hash+look   1 cached · 0 fetched · 0 no match" in out
     assert "Cached title looks like hash" not in out
     assert "fid=7 lookup_source=cache" in log.read_text(encoding="utf-8")
 
@@ -1335,5 +1349,289 @@ def test_cli_offline_old_cached_entry_is_used(
         sys.argv = orig_argv
     out = capsys.readouterr().out
     assert "Using cached AniDB data" in out
-    assert "Using local cache" in out
+    assert "  hash+look   1 cached · 0 fetched · 0 no match" in out
     assert "fid=7 lookup_source=cache" in log.read_text(encoding="utf-8")
+
+
+def test_cli_dry_run_renders_ledger_plan_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--dry-run renders the ledger plan block: factored ` (planned)` root + rename lines."""
+    from anipyrenamer.cache import CacheLookup, CacheOutcome
+
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"v")
+    dest = tmp_path / "Show" / "Show - 01.mkv"
+    info = FileInfo(fid=1, aid=1, eid=1, gid=1, size=10, ed2k="A" * 32, quality="", source="")
+    groups = [DiscoveredGroup(video_path=str(src), sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = [
+            "anipyrenamer",
+            str(tmp_path),
+            "--dry-run",
+            "--offline",
+            "--db",
+            str(tmp_path / "cache.sqlite"),
+        ]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch(
+                "anipyrenamer.cli.get_usable_file_info",
+                return_value=CacheLookup(info, CacheOutcome.USABLE),
+            ),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[RenameItem(str(src), str(dest), kind=RenameKind.FILE)],
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert f"  plan       → {tmp_path / 'Show'} (planned)" in out
+    assert "  →  " in out  # a rename line with the ledger arrow
+    assert src.exists()  # dry run moved nothing
+    assert f"  → {tmp_path / 'Show'} (planned)" in out  # footer carries the same root
+    assert "  plan        1 to rename · 0 flagged" in out  # footer action row
+    assert "exit 0 · dry run — nothing changed" in out
+
+
+def test_cli_preview_json_remains_plan_dump_without_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--preview-format json keeps the plan dump; the ledger plan block is not rendered."""
+    from anipyrenamer.cache import CacheLookup, CacheOutcome
+
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"v")
+    dest = tmp_path / "Show" / "Show - 01.mkv"
+    info = FileInfo(fid=1, aid=1, eid=1, gid=1, size=10, ed2k="A" * 32, quality="", source="")
+    groups = [DiscoveredGroup(video_path=str(src), sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = [
+            "anipyrenamer",
+            str(tmp_path),
+            "--dry-run",
+            "--offline",
+            "--preview-format",
+            "json",
+            "--db",
+            str(tmp_path / "cache.sqlite"),
+        ]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch(
+                "anipyrenamer.cli.get_usable_file_info",
+                return_value=CacheLookup(info, CacheOutcome.USABLE),
+            ),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[RenameItem(str(src), str(dest), kind=RenameKind.FILE)],
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert '"old_path"' in out  # the JSON plan dump is unchanged
+    assert '"kind"' in out
+    assert "  →  " not in out  # no ledger rename lines in json mode
+
+
+def test_cli_apply_run_reports_skip_reason_and_exit_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An applied run with a destination-exists skip streams the reasoned apply row and exits 2."""
+    from anipyrenamer.cache import CacheLookup, CacheOutcome
+
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"v")
+    blocked = tmp_path / "b.mkv"
+    blocked.write_bytes(b"w")
+    occupied = tmp_path / "occupied.mkv"
+    occupied.write_bytes(b"existing")
+    info = FileInfo(fid=1, aid=1, eid=1, gid=1, size=10, ed2k="A" * 32, quality="", source="")
+    groups = [DiscoveredGroup(video_path=str(src), sidecar_paths=())]
+    items = [
+        RenameItem(str(src), str(tmp_path / "renamed.mkv"), kind=RenameKind.FILE),
+        RenameItem(str(blocked), str(occupied), kind=RenameKind.FILE),
+    ]
+    orig_argv = sys.argv
+    try:
+        sys.argv = [
+            "anipyrenamer",
+            str(tmp_path),
+            "--offline",
+            "--yes",
+            "--db",
+            str(tmp_path / "cache.sqlite"),
+        ]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch(
+                "anipyrenamer.cli.get_usable_file_info",
+                return_value=CacheLookup(info, CacheOutcome.USABLE),
+            ),
+            patch("anipyrenamer.cli.build_plan", return_value=items),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 2
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert not src.exists() and (tmp_path / "renamed.mkv").exists()  # the movable item moved
+    assert blocked.exists() and occupied.read_bytes() == b"existing"  # no overwrite
+    assert "  apply       1 renamed · 1 skipped (destination exists)" in out
+    assert "exit 2 · completed with skips — review and re-run" in out
+
+
+def test_cli_declined_run_footers_not_applied(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Declining the (Y/n/a) gate moves nothing and footers `not applied (declined)` at exit 0."""
+    from anipyrenamer.cache import CacheLookup, CacheOutcome
+
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"v")
+    info = FileInfo(fid=1, aid=1, eid=1, gid=1, size=10, ed2k="A" * 32, quality="", source="")
+    groups = [DiscoveredGroup(video_path=str(src), sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = [
+            "anipyrenamer",
+            str(tmp_path),
+            "--offline",
+            "--db",
+            str(tmp_path / "cache.sqlite"),
+        ]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch(
+                "anipyrenamer.cli.get_usable_file_info",
+                return_value=CacheLookup(info, CacheOutcome.USABLE),
+            ),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[
+                    RenameItem(str(src), str(tmp_path / "out.mkv"), kind=RenameKind.FILE)
+                ],
+            ),
+            patch("anipyrenamer.cli._prompt_confirmation", return_value="n"),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert src.exists()  # nothing moved
+    assert "  plan        1 to rename · not applied (declined)" in out
+    assert "exit 0 · not applied — nothing changed" in out
+
+
+def test_cli_on_conflict_fail_prints_degraded_verdict_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--on-conflict=fail aborts post-plan with the verdict line only — no footer block."""
+    from anipyrenamer.cache import CacheLookup, CacheOutcome
+    from anipyrenamer.ledger import RULE
+
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"v")
+    occupied = tmp_path / "occupied.mkv"
+    occupied.write_bytes(b"existing")
+    info = FileInfo(fid=1, aid=1, eid=1, gid=1, size=10, ed2k="A" * 32, quality="", source="")
+    groups = [DiscoveredGroup(video_path=str(src), sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = [
+            "anipyrenamer",
+            str(tmp_path),
+            "--offline",
+            "--on-conflict",
+            "fail",
+            "--db",
+            str(tmp_path / "cache.sqlite"),
+        ]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch(
+                "anipyrenamer.cli.get_usable_file_info",
+                return_value=CacheLookup(info, CacheOutcome.USABLE),
+            ),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[RenameItem(str(src), str(occupied), kind=RenameKind.FILE)],
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert src.exists() and occupied.read_bytes() == b"existing"
+    assert "exit 1 · aborted on destination conflicts (--on-conflict=fail)" in out
+    assert RULE not in out  # degraded: no footer rules, just the verdict line
+
+
+def test_cli_applied_run_ends_with_footer_verdict(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Tracer (#51): a real applied run ends with the run-summary footer verdict line."""
+    from anipyrenamer.cache import CacheLookup, CacheOutcome
+
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"video")
+    info = FileInfo(fid=1, aid=1, eid=1, gid=1, size=10, ed2k="A" * 32, quality="", source="")
+    groups = [DiscoveredGroup(video_path=str(src), sidecar_paths=())]
+    orig_argv = sys.argv
+    try:
+        sys.argv = [
+            "anipyrenamer",
+            str(tmp_path),
+            "--offline",
+            "--yes",
+            "--db",
+            str(tmp_path / "cache.sqlite"),
+        ]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch(
+                "anipyrenamer.cli.get_usable_file_info",
+                return_value=CacheLookup(info, CacheOutcome.USABLE),
+            ),
+            patch(
+                "anipyrenamer.cli.build_plan",
+                return_value=[
+                    RenameItem(str(src), str(tmp_path / "out.mkv"), kind=RenameKind.FILE)
+                ],
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert not src.exists() and (tmp_path / "out.mkv").exists()  # a real move happened
+    assert "exit 0 · all renames applied" in out
