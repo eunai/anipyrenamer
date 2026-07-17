@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-07-17
+
+### Changed
+
+- Redesigned the terminal output into a **Quiet Ledger**: a single running log with one line per stage (`discover` / `hash+look` / `plan` / `apply` / `mylist`) that ends with a summary recapping what happened, the destination folder, and a plain-language explanation of the exit code. This replaces the old table preview and bold section headers with a quieter, more scannable stream; noisy per-file progress is now collapsed into simple counts (e.g. `12 cached · 3 fetched · 1 no match`). Every flag, prompt, and exit code behaves exactly as before — `--preview-format table` still selects the human-readable view (just redesigned) and `--preview-format json` is unchanged. (#51)
+
 ## [2.2.0] - 2026-07-12
 
 ### Added
