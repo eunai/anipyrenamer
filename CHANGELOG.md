@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-07-18
+
+### Added
+
+- On Windows, apply now automatically retries a rename that fails because the destination file is briefly held open by another program — a media player, antivirus scan, or search indexer — up to two retries with a short backoff before giving up. This clears the common case where a file is only momentarily locked, without needing to re-run the command by hand. (#55)
+
+### Fixed
+
+- Renaming a file no longer crashes the whole run when the destination folder can't be created or the file itself can't be moved — for example, a file locked by another program on Windows. Previously this printed a raw error and stopped partway through the batch; the tool now skips just that one file, reports it as `apply failed` in the summary, and continues with the rest, still exiting with the same code (`2`) used for other partially-completed runs. In the rare case where the destination file was partially written before the failure, nothing is cleaned up automatically — the output flags that item for manual review before you re-run. (#54)
+
 ## [2.3.0] - 2026-07-17
 
 ### Changed
