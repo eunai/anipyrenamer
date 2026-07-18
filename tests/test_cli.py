@@ -813,7 +813,13 @@ def test_rename_apply_keeps_yna_confirm(monkeypatch: pytest.MonkeyPatch) -> None
         from anipyrenamer.apply import ApplyResult
 
         apply_called["value"] = True
-        return ApplyResult(applied=1, skipped_destination_exists=0, skipped_source_missing=0)
+        return ApplyResult(
+            applied=1,
+            skipped_destination_exists=0,
+            skipped_source_missing=0,
+            skipped_apply_failed=0,
+            failures=(),
+        )
 
     orig_argv = sys.argv
     try:
@@ -1495,6 +1501,72 @@ def test_cli_apply_run_reports_skip_reason_and_exit_2(
     assert not src.exists() and (tmp_path / "renamed.mkv").exists()  # the movable item moved
     assert blocked.exists() and occupied.read_bytes() == b"existing"  # no overwrite
     assert "  apply       1 renamed · 1 skipped (destination exists)" in out
+    assert "exit 2 · completed with skips — review and re-run" in out
+
+
+def test_cli_apply_run_move_oserror_exits_2_without_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A move-time OSError (e.g. Windows file-in-use) is safe-failed, not a crash: the run
+    still exits 2 with the settled apply row and an actionable per-item console line,
+    never an uncaught exception (issue #54)."""
+    from anipyrenamer.cache import CacheLookup, CacheOutcome
+
+    locked = tmp_path / "locked.mkv"
+    locked.write_bytes(b"v")
+    movable = tmp_path / "movable.mkv"
+    movable.write_bytes(b"w")
+    info = FileInfo(fid=1, aid=1, eid=1, gid=1, size=10, ed2k="A" * 32, quality="", source="")
+    groups = [DiscoveredGroup(video_path=str(locked), sidecar_paths=())]
+    items = [
+        RenameItem(str(locked), str(tmp_path / "renamed_locked.mkv"), kind=RenameKind.FILE),
+        RenameItem(str(movable), str(tmp_path / "renamed_movable.mkv"), kind=RenameKind.FILE),
+    ]
+
+    import shutil
+
+    original_move = shutil.move
+
+    def _patched_move(src: str, dst: str) -> str:
+        if Path(src) == locked:
+            raise PermissionError(
+                "[WinError 32] The process cannot access the file "
+                "because it is being used by another process"
+            )
+        return original_move(src, dst)
+
+    monkeypatch.setattr(shutil, "move", _patched_move)
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = [
+            "anipyrenamer",
+            str(tmp_path),
+            "--offline",
+            "--yes",
+            "--db",
+            str(tmp_path / "cache.sqlite"),
+        ]
+        with (
+            patch("anipyrenamer.cli.discover", return_value=groups),
+            patch("anipyrenamer.cli.get_file_size", return_value=10),
+            patch("anipyrenamer.cli.compute_ed2k", return_value="A" * 32),
+            patch(
+                "anipyrenamer.cli.get_usable_file_info",
+                return_value=CacheLookup(info, CacheOutcome.USABLE),
+            ),
+            patch("anipyrenamer.cli.build_plan", return_value=items),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 2  # not an uncaught exception, not exit 1
+    finally:
+        sys.argv = orig_argv
+    out = capsys.readouterr().out
+    assert locked.exists()  # untouched by the failed move
+    assert not movable.exists() and (tmp_path / "renamed_movable.mkv").exists()
+    assert "Apply failed" in out and str(locked) in out  # actionable per-item evidence
+    assert "  apply       1 renamed · 1 skipped (apply failed)" in out
     assert "exit 2 · completed with skips — review and re-run" in out
 
 

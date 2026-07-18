@@ -211,12 +211,14 @@ class Ledger:
             pad = " " * (width - len(name))
             self._print_row("", f"[dim]{rich_escape(name)}{pad}     {verb} · {reason}[/dim]")
 
-    def apply(self, *, renamed: int, dest_exists: int, source_missing: int) -> None:
+    def apply(
+        self, *, renamed: int, dest_exists: int, source_missing: int, apply_failed: int = 0
+    ) -> None:
         """One settled line for apply, with the category skip-reason breakdown (SPEC §5)."""
-        skipped = dest_exists + source_missing
+        skipped = dest_exists + source_missing + apply_failed
         content = f"{renamed:>2} renamed · {skipped} skipped"
         if skipped:
-            content += f" ({_category_phrase([(dest_exists, 'destination exists'), (source_missing, 'source missing')])})"
+            content += f" ({_category_phrase([(dest_exists, 'destination exists'), (source_missing, 'source missing'), (apply_failed, 'apply failed')])})"
         self._stream_counter("apply", content)
 
     def mylist(self, added: int) -> None:

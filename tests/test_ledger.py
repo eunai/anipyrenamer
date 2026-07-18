@@ -93,6 +93,23 @@ def test_apply_counter_row_no_skips_has_no_reason() -> None:
     assert buf.getvalue() == "  apply       3 renamed · 0 skipped\n"
 
 
+def test_apply_counter_row_apply_failed_reason() -> None:
+    """A move/mkdir-time filesystem failure renders under its own category (issue #54)."""
+    console, buf = _plain_console()
+    Ledger(console).apply(renamed=5, dest_exists=0, source_missing=0, apply_failed=1)
+    assert buf.getvalue() == "  apply       5 renamed · 1 skipped (apply failed)\n"
+
+
+def test_apply_counter_row_apply_failed_mixed_with_other_reasons() -> None:
+    """Mixed reasons including apply-failed render the full per-category breakdown."""
+    console, buf = _plain_console()
+    Ledger(console).apply(renamed=7, dest_exists=1, source_missing=1, apply_failed=1)
+    assert (
+        buf.getvalue() == "  apply       7 renamed · 3 skipped "
+        "(1 destination exists · 1 source missing · 1 apply failed)\n"
+    )
+
+
 def test_plan_block_factors_root_and_renders_relative_renames() -> None:
     """The plan header carries the deepest common ancestor; renames are relative to it."""
     console, buf = _plain_console()

@@ -731,10 +731,21 @@ def _do_hashing_lookup_plan_apply(
     # Silent during apply (SPEC §3): no transient Live/Progress on the ledger
     # path; the settled apply counter row is the phase's one permanent line.
     result = apply_plan(flat_items, db_path, dry_run=False)
+    for failure in result.failures:
+        review_suffix = (
+            " — destination exists; manual review required" if failure.dst_exists_after else ""
+        )
+        console.print(
+            f"[red]Apply failed: {rich_escape(failure.src)} -> {rich_escape(failure.dst)} "
+            f"({rich_escape(failure.reason)}){review_suffix}[/red]",
+            soft_wrap=True,
+            highlight=False,
+        )
     ledger.apply(
         renamed=result.applied,
         dest_exists=result.skipped_destination_exists,
         source_missing=result.skipped_source_missing,
+        apply_failed=result.skipped_apply_failed,
     )
     # Exit 2 when there were skips (plan skips or apply skips) per spec §6
     plan_skips = sum(1 for i in flat_items if i.kind == RenameKind.SKIP)
