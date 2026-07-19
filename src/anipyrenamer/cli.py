@@ -797,7 +797,8 @@ def _run_mylist_if_requested(
         confirm=_prompt_yes_no,
     )
     ledger.mylist(mylist_result.applied)
-    if mylist_result.attempted and mylist_result.failed > 0 and exit_code == 0:
+    mylist_incomplete = mylist_result.failed > 0 or mylist_result.banned
+    if mylist_result.attempted and mylist_incomplete and exit_code == 0:
         return EXIT_PARTIAL
     return exit_code
 

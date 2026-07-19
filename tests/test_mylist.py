@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from rich.console import Console
 
+from anipyrenamer.anidb import AniDBBannedError
 from anipyrenamer.models import FileInfo
 from anipyrenamer.mylist import run_mylist_wizard
 
@@ -237,3 +238,94 @@ def test_mylist_wizard_a_reply_is_not_yes_to_all(monkeypatch) -> None:
     )
     assert result.attempted is False
     assert client.calls == []
+
+
+class _BanningMyListClient:
+    """Applies the first entry, then AniDB bans the second (issue #59)."""
+
+    def __init__(self, reason: str = "Flooding") -> None:
+        self.reason = reason
+        self.calls: list[int] = []
+
+    def mylist_add_or_update_by_fid(
+        self,
+        fid: int,
+        *,
+        add_to_mylist: bool,
+        state: int | None = None,
+        storage: str | None = None,
+        viewed: bool | None = None,
+    ) -> tuple[bool, str]:
+        self.calls.append(fid)
+        if len(self.calls) >= 2:
+            raise AniDBBannedError(self.reason)
+        return (True, "ok")
+
+
+def test_mylist_wizard_aborts_on_ban(monkeypatch) -> None:
+    """Issue #59: a 555 ban aborts the loop immediately (no traceback), records the ban and its
+    reason, does not attempt any later fid, and does not count the ban as a per-file failure."""
+    console = Console(record=True, no_color=True)
+    client = _BanningMyListClient()
+    answers = iter(["n", "y", "n", "y"])  # storage? / add? / watched? / apply?
+    monkeypatch.setattr("builtins.input", lambda _prompt: "1")
+
+    result = run_mylist_wizard(
+        console=console,
+        client=client,
+        file_infos=[_file_info(100), _file_info(101), _file_info(102)],
+        confirm=lambda _message: next(answers),
+    )
+
+    assert result.banned is True
+    assert result.ban_reason == "Flooding"
+    assert result.applied == 1
+    assert result.failed == 0
+    # The loop stopped at the banned entry: fid 102 is never sent.
+    assert client.calls == [100, 101]
+    assert "banned" in console.export_text().lower()
+
+
+class _UpdateOnlyBanningClient:
+    """Update-only mode: the very first entry's MYLIST lookup returns 555 (issue #59)."""
+
+    def __init__(self, reason: str = "Flooding") -> None:
+        self.reason = reason
+        self.calls: list[tuple[int, bool]] = []
+
+    def mylist_add_or_update_by_fid(
+        self,
+        fid: int,
+        *,
+        add_to_mylist: bool,
+        state: int | None = None,
+        storage: str | None = None,
+        viewed: bool | None = None,
+    ) -> tuple[bool, str]:
+        self.calls.append((fid, add_to_mylist))
+        raise AniDBBannedError(self.reason)
+
+
+def test_mylist_wizard_aborts_on_ban_update_only(monkeypatch) -> None:
+    """Issue #59 (update-only): when add is declined but storage is set, a 555 from the MYLIST
+    lookup surfaces as a ban — the wizard aborts on the first fid and never attempts later ones."""
+    console = Console(record=True, no_color=True)
+    client = _UpdateOnlyBanningClient()
+    # storage? y (pick state 1) / add? n / watched? n / apply? y  -> update-only, add_to_mylist=False
+    answers = iter(["y", "n", "n", "y"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: "1")
+
+    result = run_mylist_wizard(
+        console=console,
+        client=client,
+        file_infos=[_file_info(200), _file_info(201), _file_info(202)],
+        confirm=lambda _message: next(answers),
+    )
+
+    assert result.banned is True
+    assert result.ban_reason == "Flooding"
+    assert result.applied == 0
+    assert result.failed == 0
+    # Update-only mode (add declined) and the loop stopped at the first (banned) fid.
+    assert client.calls == [(200, False)]
+    assert "banned" in console.export_text().lower()

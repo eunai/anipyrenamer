@@ -581,6 +581,7 @@ def test_cli_mylist_invokes_wizard_on_dry_run(monkeypatch: pytest.MonkeyPatch) -
         attempted = False
         applied = 0
         failed = 0
+        banned = False
 
     def _fake_wizard(*, console, client, file_infos, confirm):  # noqa: ANN001, ARG001
         called["value"] = True
@@ -636,6 +637,7 @@ def test_mylist_cli_passes_yes_no_confirm(monkeypatch: pytest.MonkeyPatch) -> No
         attempted = False
         applied = 0
         failed = 0
+        banned = False
 
     def _fake_wizard(*, console, client, file_infos, confirm):  # noqa: ANN001, ARG001
         captured["confirm"] = confirm
@@ -662,6 +664,31 @@ def test_mylist_cli_passes_yes_no_confirm(monkeypatch: pytest.MonkeyPatch) -> No
         assert captured["confirm"] is not cli._prompt_confirmation
     finally:
         sys.argv = orig_argv
+
+
+def test_mylist_ban_folds_into_partial_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #59: a MyList ban is a non-zero outcome — an otherwise-clean run (exit_code 0)
+    lifts to EXIT_PARTIAL so the footer reports the MyList failure, not success."""
+    import argparse
+
+    from anipyrenamer.mylist import MyListRunResult
+
+    banned = MyListRunResult(attempted=True, applied=1, banned=True, ban_reason="Flooding")
+    monkeypatch.setattr(cli, "run_mylist_wizard", lambda **_kwargs: banned)
+
+    class _Ledger:
+        def mylist(self, _added: int) -> None:
+            pass
+
+    code = cli._run_mylist_if_requested(
+        args=argparse.Namespace(mylist=True),
+        client=object(),
+        console=cli.Console(),
+        ledger=_Ledger(),
+        resolved_infos=[],
+        exit_code=0,
+    )
+    assert code == cli.EXIT_PARTIAL
 
 
 # --- Slice 5 (CLI orchestration): FILE 506 -> re-login + bounded single retry (SPEC.md §6) ---

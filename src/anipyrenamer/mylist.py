@@ -10,6 +10,7 @@ from rich.console import Console, Group
 from rich.live import Live
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
+from anipyrenamer.anidb import AniDBBannedError
 from anipyrenamer.models import FileInfo
 
 
@@ -39,6 +40,8 @@ class MyListRunResult:
     skipped: int = 0
     selected_files: int = 0
     attempted: bool = False
+    banned: bool = False
+    ban_reason: str = ""
 
 
 def _select_storage(console: Console) -> tuple[int | None, str | None, bool]:
@@ -168,13 +171,20 @@ def run_mylist_wizard(
             # R5: persist only the AniDB state code. Pass storage=None so the
             # free-text storage= field is omitted; the label is UI copy only
             # (shown in the summary above).
-            ok, msg = client.mylist_add_or_update_by_fid(  # type: ignore[attr-defined]
-                info.fid,
-                add_to_mylist=add_to_mylist,
-                state=storage_state,
-                storage=None,
-                viewed=mark_watched,
-            )
+            try:
+                ok, msg = client.mylist_add_or_update_by_fid(  # type: ignore[attr-defined]
+                    info.fid,
+                    add_to_mylist=add_to_mylist,
+                    state=storage_state,
+                    storage=None,
+                    viewed=mark_watched,
+                )
+            except AniDBBannedError as exc:
+                # A ban is not a per-file failure: stop the loop at once so no
+                # further packet deepens the ban (issue #59).
+                result.banned = True
+                result.ban_reason = exc.reason
+                break
             if ok:
                 result.applied += 1
             else:
@@ -189,6 +199,14 @@ def run_mylist_wizard(
                 _refresh_live()
             if item_progress is not None:
                 item_progress(idx, total, "end")
+
+    if result.banned:
+        reason = f" ({result.ban_reason})" if result.ban_reason else ""
+        console.print(
+            f"[red]AniDB has banned this client{reason}.[/red] "
+            "Stopped MyList updates before sending more; wait before retrying."
+        )
+        return result
 
     console.print("Applied.")
     return result

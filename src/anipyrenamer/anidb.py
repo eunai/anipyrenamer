@@ -1,4 +1,4 @@
-"""AniDB UDP client: AUTH, FILE, throttle (burst 5, then 1 per 2.5s)."""
+"""AniDB UDP client: AUTH, FILE, throttle (short-term 1 pkt/2s, long-term 1 pkt/4s)."""
 
 from __future__ import annotations
 
@@ -25,9 +25,15 @@ ANIDB_HOST = "api.anidb.net"
 ANIDB_PORT = 9000
 FILE_FMASK = "79FAFFE900"
 FILE_AMASK = "F2FCF0C0"
-# Throttle: first 5 packets, then 1 packet per 2.5 s
+# Throttle — respects AniDB's documented UDP flood policy. Per that policy the short-term
+# limit (1 packet / 2 s) applies only after an initial burst of ~5 packets, and a long-term
+# limit of 1 packet / 4 s applies over an extended run. We space the first BURST_SIZE packets
+# by SHORT_PACKET_INTERVAL and sustained traffic by LONG_PACKET_INTERVAL. Spacing the initial
+# burst at 2 s is a deliberate conservative margin (stricter than the documented burst
+# allowance), not a spec requirement. (https://wiki.anidb.net/UDP_API_Definition)
 BURST_SIZE = 5
-PACKET_INTERVAL = 2.5
+SHORT_PACKET_INTERVAL = 2.0
+LONG_PACKET_INTERVAL = 4.0
 MAX_RETRIES = 3
 RETRY_BASE_SECONDS = 0.5
 PING_TIMEOUT = 3.0
@@ -37,6 +43,21 @@ MAX_FIELD_LENGTH = 200
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 PingStatus = Literal["reachable", "unreachable", "malformed", "timeout", "socket_error"]
+
+
+class AniDBBannedError(Exception):
+    """Raised when AniDB replies ``555 BANNED``.
+
+    A ban means every further packet only deepens it, so callers must stop
+    sending and surface the ban to the user rather than retrying it as a
+    transient network error. ``reason`` carries AniDB's ban-reason line when
+    present (e.g. ``"Flooding"``).
+    """
+
+    def __init__(self, reason: str = "") -> None:
+        self.reason = reason
+        detail = f" ({reason})" if reason else ""
+        super().__init__(f"AniDB has banned this client{detail}.")
 
 
 @dataclass(frozen=True)
@@ -129,8 +150,14 @@ def _extract_reply_code(reply: str) -> int | None:
     return int(match.group(1))
 
 
+def _ban_reason(reply: str) -> str:
+    """Extract AniDB's ban reason (the second line of a ``555`` reply), if any."""
+    lines = reply.split("\n", 1)
+    return lines[1].strip() if len(lines) > 1 else ""
+
+
 class AniDBClient:
-    """UDP client with throttle: burst 5, then 1 per 2.5s."""
+    """UDP client with throttle: short-term 1 pkt/2s, long-term 1 pkt/4s (AniDB flood policy)."""
 
     def __init__(
         self,
@@ -147,9 +174,11 @@ class AniDBClient:
         self._sock: socket.socket | None = None
         self._session: str | None = None
         self._packets_sent = 0
-        self._burst_start: float = 0.0
+        self._last_send: float | None = None
         self._encrypted = False
         self._aes_key: bytes | None = None
+        self._banned = False
+        self._ban_reason = ""
 
     @property
     def encryption_enabled(self) -> bool:
@@ -217,19 +246,36 @@ class AniDBClient:
         return self._sock
 
     def _throttle(self) -> None:
-        now = self._now()
-        if self._packets_sent == 0:
-            self._burst_start = now
+        # Enforce a minimum gap since the previous packet (never a zero-delay burst).
+        # Warm-up packets may use the short-term limit; sustained traffic uses the
+        # stricter long-term limit — matching AniDB's documented flood policy.
         self._packets_sent += 1
-        if self._packets_sent <= BURST_SIZE:
-            return
-        # After burst: wait so we don't exceed 1 per 2.5s
-        elapsed = now - self._burst_start
-        required = (self._packets_sent - BURST_SIZE) * PACKET_INTERVAL
-        if required > elapsed:
-            self._sleep(required - elapsed)
+        interval = (
+            SHORT_PACKET_INTERVAL if self._packets_sent <= BURST_SIZE else LONG_PACKET_INTERVAL
+        )
+        now = self._now()
+        if self._last_send is not None:
+            gap = now - self._last_send
+            if gap < interval:
+                self._sleep(interval - gap)
+                now = self._now()
+        self._last_send = now
+
+    def _mark_banned(self, reply: str) -> AniDBBannedError:
+        """Record a ``555 BANNED`` reply and build the error to raise for it.
+
+        Latches ``_banned`` so the post-ban guard in ``_send_recv`` refuses any
+        further packet — sending into an active ban only prolongs it.
+        """
+        self._banned = True
+        self._ban_reason = _ban_reason(reply)
+        return AniDBBannedError(self._ban_reason)
 
     def _send_recv(self, msg: str) -> str:
+        if self._banned:
+            # A ban-induced silence must never be retried as a transient timeout;
+            # once banned, refuse to send at all (issue #59).
+            raise AniDBBannedError(self._ban_reason)
         last_error: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -380,7 +426,16 @@ class AniDBClient:
 
     def logout(self) -> None:
         """LOGOUT and close socket. Single lightweight attempt (no full retry loop)
-        so the server reliably sees LOGOUT without excessive UDP traffic."""
+        so the server reliably sees LOGOUT without excessive UDP traffic.
+
+        When the client is banned, the "no further packet after a ban" invariant
+        (issue #59) extends to cleanup: send nothing, just drop local session state
+        and close the socket — a LOGOUT packet would only prolong the ban.
+        """
+        if self._banned:
+            self._session = None
+            self.close()
+            return
         if self._session and self._sock:
             self._send_recv_once(f"LOGOUT s={self._session}", timeout=5.0)
             self._session = None
@@ -438,6 +493,8 @@ class AniDBClient:
         if code == 506:
             self._session = None
             return None
+        if code == 555:
+            raise self._mark_banned(reply)
         if code != 221:
             return None
         lines = reply.split("\n")
@@ -515,6 +572,8 @@ class AniDBClient:
                 )
             if code == 320:
                 return (False, "No such file on AniDB.")
+            if code == 555:
+                raise self._mark_banned(reply)
             return (False, f"AniDB MYLISTADD failed ({code}).")
 
         # Update-only mode (do not add if missing)
@@ -559,6 +618,8 @@ class AniDBClient:
             return (True, "MyList entry updated.")
         if code == 411:
             return (False, "No such MyList entry.")
+        if code == 555:
+            raise self._mark_banned(reply)
         return (False, f"AniDB MYLIST edit failed ({code}).")
 
     def _fill_anime_info(self, info: FileInfo) -> None:

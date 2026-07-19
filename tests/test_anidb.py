@@ -8,12 +8,14 @@ import socket
 import pytest
 
 from anipyrenamer.anidb import (
+    AniDBBannedError,
     AniDBClient,
     MAX_FIELD_LENGTH,
     AniDBConfig,
     BURST_SIZE,
+    LONG_PACKET_INTERVAL,
     MAX_RETRIES,
-    PACKET_INTERVAL,
+    SHORT_PACKET_INTERVAL,
     RETRY_BASE_SECONDS,
     PING_TIMEOUT,
     _UDP_RECV_BUFFER,
@@ -468,11 +470,13 @@ def test_mylist_add_or_update_by_fid_existing_entry_then_edit(
 
 
 def test_throttle_and_retry_constants() -> None:
-    """Characterization: AniDB throttle/retry constants are the documented values (SPEC.md §6)."""
+    """The throttle constants match AniDB's documented flood limits (SPEC.md §6): a short-term
+    limit of 1 packet / 2 s and a long-term limit of 1 packet / 4 s over an extended run."""
     assert MAX_RETRIES == 3
     assert RETRY_BASE_SECONDS == 0.5
     assert BURST_SIZE == 5
-    assert PACKET_INTERVAL == 2.5
+    assert SHORT_PACKET_INTERVAL == 2.0
+    assert LONG_PACKET_INTERVAL == 4.0
 
 
 def test_socket_timeout_is_15s() -> None:
@@ -601,9 +605,10 @@ def test_file_lookup_not_found_keeps_session(monkeypatch: pytest.MonkeyPatch) ->
 # --- Slice 6: throttle timing via the injected clock/sleep seam (SPEC.md §6) ---
 
 
-def test_throttle_bursts_then_spaces_by_elapsed() -> None:
-    """Characterization: the first BURST_SIZE packets do not sleep; afterward _throttle enforces
-    PACKET_INTERVAL spacing, and the sleep is (required - elapsed) — not a blind PACKET_INTERVAL."""
+def test_throttle_enforces_short_then_long_gaps() -> None:
+    """The throttle keeps a minimum gap between packets — never a zero-delay burst. The first
+    BURST_SIZE packets may use the short-term 2 s spacing; sustained traffic afterward drops to
+    the long-term 4 s spacing (AniDB flood policy, SPEC.md §6)."""
     clock = {"t": 0.0}
     sleeps: list[float] = []
 
@@ -616,24 +621,132 @@ def test_throttle_bursts_then_spaces_by_elapsed() -> None:
 
     client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0), now=fake_now, sleep=fake_sleep)
 
-    # Burst: the first BURST_SIZE packets (all at t=0) are not throttled; burst_start anchors at 0.
-    for _ in range(BURST_SIZE):
-        client._throttle()
+    # First packet has no predecessor: nothing to space against, so no sleep.
+    client._throttle()
     assert sleeps == []
 
-    # Packet BURST_SIZE+1 after only 1.0s of real work: required = 1 * PACKET_INTERVAL = 2.5,
-    # elapsed = 1.0, so it sleeps 2.5 - 1.0 = 1.5 (elapsed-aware, NOT a blind 2.5).
-    clock["t"] = 1.0
-    client._throttle()
-    assert sleeps == [pytest.approx(PACKET_INTERVAL - 1.0)]  # 1.5
+    # Warm-up packets (2 .. BURST_SIZE): back-to-back, each spaced by the short-term 2 s limit —
+    # not the old zero-delay burst.
+    for _ in range(BURST_SIZE - 1):
+        client._throttle()
+        assert sleeps[-1] == pytest.approx(SHORT_PACKET_INTERVAL)  # 2.0
+    assert len(sleeps) == BURST_SIZE - 1
 
-    # Next packet: required = 2 * PACKET_INTERVAL = 5.0; clock is now 2.5 (1.0 + 1.5 slept),
-    # elapsed = 2.5, so it sleeps 5.0 - 2.5 = 2.5.
+    # Once past the warm-up, sustained traffic uses the long-term 4 s spacing.
     client._throttle()
-    assert sleeps[-1] == pytest.approx(PACKET_INTERVAL)  # 2.5
+    assert sleeps[-1] == pytest.approx(LONG_PACKET_INTERVAL)  # 4.0
 
-    # If wall-clock has already moved well past the schedule, there is NO sleep (elapsed-based).
-    clock["t"] = 100.0
+    # If real work between packets already exceeded the interval, there is NO extra sleep.
+    clock["t"] += 100.0
     before = len(sleeps)
     client._throttle()
-    assert len(sleeps) == before  # already behind schedule -> no throttle sleep
+    assert len(sleeps) == before  # already spaced enough -> no throttle sleep
+
+
+# --- Issue #59: AniDB 555 BANNED is signalled, not swallowed as a per-file failure ---
+
+
+def test_mylist_edit_555_raises_banned_with_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 555 on the edit path raises AniDBBannedError carrying AniDB's reason and marks the
+    client banned, instead of returning a generic per-file failure the loop would keep going past."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    replies = iter(["310 FILE ALREADY IN MYLIST\n77", "555 BANNED\nFlooding"])
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: next(replies))
+
+    with pytest.raises(AniDBBannedError) as excinfo:
+        client.mylist_add_or_update_by_fid(22, add_to_mylist=True, state=2)
+
+    assert excinfo.value.reason == "Flooding"
+    assert client._banned is True
+
+
+def test_mylist_add_555_raises_banned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 555 on the direct add path (no prior 310) also raises AniDBBannedError and marks banned."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "555 BANNED\nFlooding")
+
+    with pytest.raises(AniDBBannedError) as excinfo:
+        client.mylist_add_or_update_by_fid(22, add_to_mylist=True, state=1)
+
+    assert excinfo.value.reason == "Flooding"
+    assert client._banned is True
+
+
+def test_send_recv_refuses_to_send_once_banned() -> None:
+    """Once banned, _send_recv raises AniDBBannedError immediately without touching the socket —
+    a ban-induced silence must never be retried as a transient timeout (issue #59)."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._banned = True
+    client._ban_reason = "Flooding"
+
+    def _boom() -> object:  # pragma: no cover - must never be reached
+        raise AssertionError("banned client must not open a socket")
+
+    client._ensure_socket = _boom  # type: ignore[method-assign]
+
+    with pytest.raises(AniDBBannedError) as excinfo:
+        client._send_recv("PING")
+    assert excinfo.value.reason == "Flooding"
+
+
+def test_logout_sends_nothing_once_banned() -> None:
+    """The "no further packet after a ban" invariant (issue #59) includes cleanup: a banned
+    client's logout() must not send LOGOUT — it closes locally and drops session state."""
+    sent: list[bytes] = []
+    closed: list[bool] = []
+
+    class FakeSock:
+        def gettimeout(self) -> float:
+            return 15.0
+
+        def settimeout(self, _t: float) -> None:
+            pass
+
+        def sendto(self, payload: bytes, _addr: object) -> int:  # pragma: no cover - must not run
+            sent.append(payload)
+            return len(payload)
+
+        def recvfrom(self, _n: int) -> tuple[bytes, object]:  # pragma: no cover - must not run
+            raise AssertionError("banned client must not recv during logout")
+
+        def close(self) -> None:
+            closed.append(True)
+
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    client._sock = FakeSock()  # type: ignore[assignment]
+    client._banned = True
+    client._ban_reason = "Flooding"
+
+    client.logout()
+
+    assert sent == []  # zero packets sent during cleanup
+    assert closed == [True]  # socket still closed
+    assert client._session is None  # local session dropped
+
+
+def test_mylist_lookup_555_raises_banned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 555 on the MYLIST lookup (update-only path) raises AniDBBannedError and latches the ban,
+    rather than being read as an ordinary non-221 'no entry' response (issue #59)."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "555 BANNED\nFlooding")
+
+    with pytest.raises(AniDBBannedError) as excinfo:
+        client.mylist_entry_by_fid(22)
+
+    assert excinfo.value.reason == "Flooding"
+    assert client._banned is True
+
+
+def test_mylist_update_only_555_raises_banned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Update-only mode (add_to_mylist=False) surfaces a lookup 555 as a ban, not as
+    'No existing MyList entry to update.' — so the wizard aborts instead of continuing."""
+    client = AniDBClient(AniDBConfig("u", "p", "c", "1", 0))
+    client._session = "sess"
+    monkeypatch.setattr(client, "_send_recv", lambda _msg: "555 BANNED\nFlooding")
+
+    with pytest.raises(AniDBBannedError):
+        client.mylist_add_or_update_by_fid(22, add_to_mylist=False, state=1)
