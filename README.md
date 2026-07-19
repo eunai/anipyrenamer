@@ -89,6 +89,17 @@ Developed and tested on **Windows** and **Unix-like** systems (Linux, macOS). Pa
 
 See [docs/runbook.md](docs/runbook.md) for exit codes, common failures, and safe reruns.
 
+## Notes for other AniDB UDP API developers
+
+anipyrenamer speaks AniDB's UDP API, which enforces strict flood protection. If you're writing your own client, here is the documented policy from AniDB's [UDP API Definition](https://wiki.anidb.net/UDP_API_Definition) (the authoritative source), and how we chose to honor it:
+
+- **Two documented rate limits.** The short-term limit of one packet per 2 seconds begins *after the first five packets*; over an extended run, the long-term guidance is one packet per 4 seconds. Exceeding these doesn't fail loudly — AniDB drops the excess packets until your rate is acceptable again. For bulk work (e.g. syncing a season to MyList), pace to the long-term rate, or you can trigger flood protection and dropped packets. *(As a conservative choice of our own — not an AniDB requirement — anipyrenamer spaces even its first five packets by 2 seconds, then 4 seconds sustained.)*
+- **`555 BANNED` is the explicit signal.** After flood protection triggers, AniDB may simply stop replying, so don't depend on receiving a `555`. When one does arrive (sometimes carrying a reason such as `Flooding`), treat it as the point to latch a "banned" state and stop sending. *(For MyList operations, anipyrenamer treats a `555` reply as the point to latch a banned state and stop sending — including `LOGOUT`.)*
+- **Don't over-interpret silence.** A timeout *without* a `555` is ambiguous — it may be a network problem or rate-limiting. Use bounded backoff and surface it as an ambiguous network/rate-limit failure; don't treat it as certainly a ban.
+- **Cache and reuse metadata.** AniDB asks clients not to repeatedly request the same datasets and warns that future enforcement may restrict repeated requests.
+
+For MyList operations, this shaped anipyrenamer's throttle (a minimum gap between every packet) and its ban handling: on a MyList `555`, stop the MyList run cleanly and surface the reason; on an unexplained timeout, bounded retries then a clear failure — never retrying a known ban.
+
 ## Contributing and issues
 
 Report bugs and request features via the project issue tracker on [GitHub](https://github.com/eunai/anipyrenamer/issues).
