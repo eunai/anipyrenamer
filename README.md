@@ -1,6 +1,6 @@
 # anipyrenamer
 
-![version: 2.4.0](https://img.shields.io/badge/version-2.4.0-blue?style=flat-square)
+![version: 2.4.1](https://img.shields.io/badge/version-2.4.1-blue?style=flat-square)
 
 `anipyrenamer` is a command-line tool that renames anime files using ED2K hash lookups from AniDB, with local SQLite caching for faster reruns and offline support.
 

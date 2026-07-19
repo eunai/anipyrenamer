@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-07-19
+
+### Fixed
+
+- The MyList update step no longer crashes with a raw error when AniDB temporarily bans the client for sending requests too quickly. Such a ban is now detected and reported clearly — including AniDB's stated reason, such as `Flooding` — so the MyList step stops immediately instead of pressing on into a stack trace, and the run finishes with its normal summary and a non-zero exit code.
+- anipyrenamer now paces its AniDB requests more conservatively, in line with AniDB's documented rate limits, to reduce the chance of triggering that ban during larger MyList updates. As a result, the AniDB lookup and MyList steps are somewhat slower.
+
 ## [2.4.0] - 2026-07-18
 
 ### Added
