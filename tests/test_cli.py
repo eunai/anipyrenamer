@@ -25,7 +25,12 @@ from anipyrenamer.validation import flatten_and_validate_folder_renames
 
 
 def test_cli_import_does_not_call_load_dotenv_until_main(monkeypatch: pytest.MonkeyPatch) -> None:
-    """SEC-10: importing cli does not load .env; main() invokes _load_env()."""
+    """SEC-10: importing cli does not load .env; main() invokes _load_env().
+
+    Uses a no-paths invocation (prints help, exits 0) rather than ``--help``:
+    since #58, ``--help``/``--version`` are standalone commands that argparse
+    exits during ``parse_args()``, *before* ``main()`` reaches ``_load_env()``.
+    """
     calls: list[object] = []
 
     def fake_load_dotenv(*args: object, **kwargs: object) -> bool:
@@ -40,7 +45,7 @@ def test_cli_import_does_not_call_load_dotenv_until_main(monkeypatch: pytest.Mon
 
     orig_argv = sys.argv
     try:
-        sys.argv = ["anipyrenamer", "--help"]
+        sys.argv = ["anipyrenamer"]
         with pytest.raises(SystemExit) as exc_info:
             cli_module.main()
         assert exc_info.value.code == 0

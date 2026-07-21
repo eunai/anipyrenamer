@@ -8,6 +8,8 @@ import logging
 import os
 import signal
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +18,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.markup import escape as rich_escape
 
+from anipyrenamer import __version__ as _SOURCE_VERSION
 from anipyrenamer.apply import apply_plan
 from anipyrenamer.cache import (
     CacheOutcome,
@@ -257,12 +260,53 @@ def _validate_doctor_allowlist(parser: argparse.ArgumentParser, argv: list[str])
         )
 
 
+class _VersionAction(argparse.Action):
+    """Print ``<prog> <version>`` and exit; resolves the version lazily, only when invoked.
+
+    Registering ``--version`` via ``action="version"`` would force eager evaluation of
+    its ``version=`` string at parser-construction time, on every CLI invocation --
+    including a hard failure if distribution metadata is ever unavailable. Resolving
+    inside ``__call__`` keeps the lookup scoped to an actual ``--version`` invocation.
+    """
+
+    def __init__(
+        self,
+        option_strings: list[str],
+        dest: str = argparse.SUPPRESS,
+        default: str = argparse.SUPPRESS,
+        help: str | None = None,  # noqa: A002 - matches argparse.Action's parameter name
+    ) -> None:
+        super().__init__(
+            option_strings=option_strings, dest=dest, default=default, nargs=0, help=help
+        )
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        try:
+            resolved_version = _dist_version("anipyrenamer")
+        except PackageNotFoundError:
+            # Uninstalled source tree (e.g. running from a checkout without an
+            # editable install): fall back to the package's own __version__.
+            resolved_version = _SOURCE_VERSION
+        print(f"{parser.prog} {resolved_version}")
+        parser.exit()
+
+
 def main() -> None:
     """Run full pipeline: discover, hash, lookup, plan, preview, apply."""
-    env_sources = _load_env()
     parser = argparse.ArgumentParser(
         prog="anipyrenamer",
         description="Rename anime files using ED2K hash and AniDB.",
+    )
+    parser.add_argument(
+        "--version",
+        action=_VersionAction,
+        help="Show the installed anipyrenamer version and exit.",
     )
     parser.add_argument(
         "paths",
@@ -386,6 +430,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    env_sources = _load_env()
     _configure_cli_logging(level_name=args.log_level, log_file=args.log_file)
 
     if args.doctor:
