@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-07-20
+
+### Added
+
+- Added `anipyrenamer --version`, which prints the installed version and exits immediately — no config loaded, no logging set up, no rename pipeline run. (#58)
+
 ## [2.4.1] - 2026-07-19
 
 ### Fixed
