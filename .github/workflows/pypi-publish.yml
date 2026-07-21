@@ -1,6 +1,9 @@
 name: PyPI Publish
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch: {}
 
 permissions:
