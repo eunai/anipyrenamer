@@ -62,6 +62,7 @@ def _run_doctor_argv(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> tuple[
         ["--name-dedupe", "counter"],
         ["--preview-format", "table"],
         ["--refresh-cache"],
+        ["--no-progress"],
         ["--mylist"],
     ],
 )

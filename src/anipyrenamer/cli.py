@@ -39,6 +39,7 @@ from anipyrenamer.mylist import run_mylist_wizard
 from anipyrenamer.naming import DEFAULT_FILE_TEMPLATE, DEFAULT_FOLDER_TEMPLATE
 from anipyrenamer.plan import build_plan
 from anipyrenamer.permissions import warn_if_world_readable
+from anipyrenamer.progress_overlay import LinkState, ProgressOverlay
 from anipyrenamer.validation import flatten_and_validate_folder_renames
 
 
@@ -409,6 +410,11 @@ def main() -> None:
         help="Bypass the cache and refetch AniDB data for scanned files when online.",
     )
     parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable the live progress overlay shown during hashing on an interactive terminal.",
+    )
+    parser.add_argument(
         "--mylist",
         action="store_true",
         help="After pipeline completion, run interactive MyList update wizard.",
@@ -573,6 +579,31 @@ def _run_after_anidb_ready(
         _disconnect_anidb(client, console, had_session)
 
 
+def _progress_enabled(args: argparse.Namespace, console: Console) -> bool:
+    """Whether the hash+look progress overlay may run.
+
+    TTY-only and strictly additive: suppressed under ``--no-progress``, ``--preview-format
+    json`` (before any terminal evaluation), a non-interactive stdout, or a dumb terminal. When
+    this is false the overlay emits nothing and the hashing callback path stays ``None``.
+    """
+    if args.no_progress:
+        return False
+    if args.preview_format == "json":
+        return False
+    return console.is_terminal and not console.is_dumb_terminal
+
+
+def _link_state(client: Any) -> LinkState | None:
+    """Snapshot the AniDB connection state for the overlay's lookup row (None when offline)."""
+    if client is None:
+        return None
+    return LinkState(
+        session=client.has_session,
+        encryption=client.encryption_enabled,
+        throttle_seconds=client.next_send_interval,
+    )
+
+
 def _do_hashing_lookup_plan_apply(
     args: argparse.Namespace,
     client: Any,
@@ -594,89 +625,104 @@ def _do_hashing_lookup_plan_apply(
     fetched_count = 0
     no_match_count = 0
 
-    # Intentionally silent during hash+look (SPEC §3): per-file chatter collapses
-    # into the settled counter line below; only --debug cache lines and error
-    # lines print inline. No transient Live/Progress on the ledger path.
-    for group in groups:
-        path_str = str(group.video_path)
-        basename = Path(path_str).name
-        lookup_source: str | None = None
-        cached_hash = precomputed_hashes.get(group.video_path)
-        if cached_hash is not None:
-            size, ed2k = cached_hash
-        else:
-            size = get_file_size(group.video_path)
-            ed2k = compute_ed2k(group.video_path)
-        lookup = get_usable_file_info(
-            db_path, size, ed2k, refresh=args.refresh_cache, allow_refetch=client is not None
-        )
-        info = lookup.info
-        if lookup.outcome is not CacheOutcome.MISS and args.debug:
-            console.print(
-                f"[dim][debug] Using cached AniDB data for size={size} ed2k={ed2k[:16]}…[/dim]"
+    # The progress overlay (TTY-only, transient) sits above the untouched Quiet Ledger during
+    # hash+look: per-file progress is shown live, then cleared, and the permanent counter line
+    # (SPEC §3) prints once the phase settles. Off-TTY / json / --no-progress: no overlay bytes
+    # and no per-chunk callback work. Only --debug cache lines and error lines print inline.
+    with ProgressOverlay(
+        console, total=len(groups), enabled=_progress_enabled(args, console)
+    ) as overlay:
+        for ordinal, group in enumerate(groups, start=1):
+            path_str = str(group.video_path)
+            basename = Path(path_str).name
+            lookup_source: str | None = None
+            cached_hash = precomputed_hashes.get(group.video_path)
+            if cached_hash is not None:
+                size, ed2k = cached_hash
+            else:
+                size = get_file_size(group.video_path)
+                overlay.begin_hash(ordinal, basename, size)
+                # Feed the callback only while the overlay is live; a suppressed or
+                # cached-only run hashes with no callback work at all.
+                progress_callback = overlay.on_progress if overlay.active else None
+                ed2k = compute_ed2k(group.video_path, progress_callback=progress_callback)
+            overlay.advance_overall(ordinal)
+            lookup = get_usable_file_info(
+                db_path, size, ed2k, refresh=args.refresh_cache, allow_refetch=client is not None
             )
-        if lookup.outcome is CacheOutcome.REPAIR and args.debug:
-            console.print("[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]")
-        if info is not None:
-            lookup_source = "cache"
-            cached_count += 1
-        if info is None and client and not anidb_aborted:
-            try:
-                info = client.file_lookup(size, ed2k)
-                if info is not None:
-                    lookup_source = "anidb"
-                if info is None and not client.has_session:
-                    client.login()
+            info = lookup.info
+            if lookup.outcome is not CacheOutcome.MISS and args.debug:
+                console.print(
+                    f"[dim][debug] Using cached AniDB data for size={size} ed2k={ed2k[:16]}…[/dim]"
+                )
+            if lookup.outcome is CacheOutcome.REPAIR and args.debug:
+                console.print(
+                    "[dim][debug] Cached title looks like hash; refetching from AniDB.[/dim]"
+                )
+            if info is not None:
+                lookup_source = "cache"
+                cached_count += 1
+            if info is None and client and not anidb_aborted:
+                try:
                     info = client.file_lookup(size, ed2k)
                     if info is not None:
                         lookup_source = "anidb"
-                consecutive_timeouts = 0
-            except TimeoutError:
-                consecutive_timeouts += 1
-                console.print(
-                    f"[red]AniDB lookup timed out for {rich_escape(path_str)}; skipping.[/red]"
-                )
-                if consecutive_timeouts >= max_consecutive_timeouts:
+                    if info is None and not client.has_session:
+                        client.login()
+                        info = client.file_lookup(size, ed2k)
+                        if info is not None:
+                            lookup_source = "anidb"
+                    consecutive_timeouts = 0
+                except TimeoutError:
+                    consecutive_timeouts += 1
                     console.print(
-                        f"[red]{max_consecutive_timeouts} consecutive AniDB timeouts; "
-                        "skipping remaining AniDB lookups.[/red] "
-                        "Try again later or use [bold]--offline[/bold] to use cache only."
+                        f"[red]AniDB lookup timed out for {rich_escape(path_str)}; skipping.[/red]"
                     )
-                    anidb_aborted = True
-            if info is not None:
-                set_file_info(db_path, info)
-                fetched_count += 1
-        if info is None:
-            no_match_count += 1
+                    if consecutive_timeouts >= max_consecutive_timeouts:
+                        console.print(
+                            f"[red]{max_consecutive_timeouts} consecutive AniDB timeouts; "
+                            "skipping remaining AniDB lookups.[/red] "
+                            "Try again later or use [bold]--offline[/bold] to use cache only."
+                        )
+                        anidb_aborted = True
+                if info is not None:
+                    set_file_info(db_path, info)
+                    fetched_count += 1
+            if info is None:
+                no_match_count += 1
+                overlay.settle_lookup(
+                    cached_count, fetched_count, no_match_count, _link_state(client)
+                )
+                _LOG.info(
+                    "phase=lookup basename=%s fid=0 lookup_source=%s",
+                    basename,
+                    lookup_source if lookup_source is not None else "skip",
+                )
+                skip_item = RenameItem(
+                    old_path=group.video_path,
+                    new_path="(AniDB lookup failed)",
+                    kind=RenameKind.SKIP,
+                    anime_type="",
+                )
+                all_items.append(([skip_item], group.video_path))
+                continue
+            assert lookup_source is not None
             _LOG.info(
-                "phase=lookup basename=%s fid=0 lookup_source=%s",
+                "phase=lookup basename=%s fid=%d lookup_source=%s",
                 basename,
-                lookup_source if lookup_source is not None else "skip",
+                info.fid,
+                lookup_source,
             )
-            skip_item = RenameItem(
-                old_path=group.video_path,
-                new_path="(AniDB lookup failed)",
-                kind=RenameKind.SKIP,
-                anime_type="",
-            )
-            all_items.append(([skip_item], group.video_path))
-            continue
-        assert lookup_source is not None
-        _LOG.info(
-            "phase=lookup basename=%s fid=%d lookup_source=%s",
-            basename,
-            info.fid,
-            lookup_source,
-        )
-        use_folder = args.folder or args.plex
-        folder_tpl: str | None = None
-        if use_folder:
-            folder_tpl = args.folder_template
-            if args.plex:
-                folder_tpl = _apply_plex_suffix(folder_tpl)
-        items = build_plan(group, info, args.template, args.dest, folder_template=folder_tpl)
-        all_items.append((items, group.video_path))
-        resolved_infos.append(info)
+            use_folder = args.folder or args.plex
+            folder_tpl: str | None = None
+            if use_folder:
+                folder_tpl = args.folder_template
+                if args.plex:
+                    folder_tpl = _apply_plex_suffix(folder_tpl)
+            items = build_plan(group, info, args.template, args.dest, folder_template=folder_tpl)
+            all_items.append((items, group.video_path))
+            resolved_infos.append(info)
+            overlay.settle_lookup(cached_count, fetched_count, no_match_count, _link_state(client))
 
     ledger.hash_lookup(cached=cached_count, fetched=fetched_count, no_match=no_match_count)
 

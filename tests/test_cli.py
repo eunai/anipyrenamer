@@ -742,6 +742,10 @@ class _RetryClient:
     def encryption_enabled(self) -> bool:
         return False
 
+    @property
+    def next_send_interval(self) -> float:
+        return 2.0
+
 
 def _file_info() -> FileInfo:
     return FileInfo(

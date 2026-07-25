@@ -189,6 +189,14 @@ class AniDBClient:
         """True if logged in (session key present)."""
         return self._session is not None
 
+    @property
+    def next_send_interval(self) -> float:
+        """Seconds the throttle will space before the next packet (2s warm-up, 4s sustained).
+
+        Read-only view of the flood-control state for status display; does not itself throttle.
+        """
+        return SHORT_PACKET_INTERVAL if self._packets_sent < BURST_SIZE else LONG_PACKET_INTERVAL
+
     def _derive_aes_key(self, salt: str) -> bytes:
         """AniDB ENCRYPT key derivation: MD5(api_key + salt) -> 16 bytes."""
         raw = (self._config.api_key or "") + salt
