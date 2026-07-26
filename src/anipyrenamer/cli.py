@@ -84,6 +84,23 @@ def _load_env() -> tuple[Path, ...]:
 _LOG = logging.getLogger("anipyrenamer.cli")
 
 
+def _configure_windows_stdout_utf8() -> None:
+    """Make Windows stdout UTF-8 before Rich constructs its output console.
+
+    Capturing helpers and custom stdout streams do not always expose
+    ``reconfigure()``, so they retain their existing behavior.
+    """
+    if sys.platform != "win32":
+        return
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8")
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def _configure_cli_logging(*, level_name: str, log_file: str | None) -> None:
     """Configure the ``anipyrenamer.*`` logging namespace (stderr + optional UTF-8 file)."""
     pkg = logging.getLogger("anipyrenamer")
@@ -436,6 +453,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    _configure_windows_stdout_utf8()
     env_sources = _load_env()
     _configure_cli_logging(level_name=args.log_level, log_file=args.log_file)
 

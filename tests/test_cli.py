@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib
 import sqlite3
+import subprocess
 import sys
+import textwrap
 from pathlib import Path, WindowsPath
 from unittest.mock import MagicMock, patch
 
@@ -153,6 +155,73 @@ def test_cli_dry_run_empty_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str
         sys.argv = orig_argv
     out = capsys.readouterr().out
     assert "exit 0 · no files to rename" in out  # trivial paths still footer (SPEC §3)
+
+
+def _run_cli_with_cp1252_stdout(
+    args: list[str], *, cwd: Path | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    """Run the public CLI with strict cp1252 inherited stdout, then capture its raw bytes."""
+    script = textwrap.dedent(
+        f"""
+        import sys
+
+        sys.stdout.reconfigure(encoding="cp1252", errors="strict")
+
+        from anipyrenamer.cli import main
+
+        sys.argv = {args!r}
+        main()
+        """
+    )
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        check=False,
+        cwd=cwd,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows stdout encoding regression")
+def test_cli_redirected_cp1252_stdout_preserves_utf8_quiet_ledger(tmp_path: Path) -> None:
+    """A redirected Windows Quiet Ledger remains UTF-8 when inherited stdout is cp1252."""
+    result = _run_cli_with_cp1252_stdout(
+        [
+            "anipyrenamer",
+            str(tmp_path),
+            "--dry-run",
+            "--offline",
+            "--db",
+            str(tmp_path / "cache.sqlite"),
+        ]
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == b""
+    output = result.stdout.decode("utf-8")
+    assert "─" in output
+    assert "exit 0 · no files to rename" in output
+    assert "�" not in output
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows stdout encoding regression")
+def test_cli_doctor_redirected_cp1252_stdout_preserves_utf8(tmp_path: Path) -> None:
+    """Windows stdout is UTF-8 before the doctor's separate Rich console is constructed."""
+    result = _run_cli_with_cp1252_stdout(
+        [
+            "anipyrenamer",
+            "--doctor",
+            "--offline",
+            "--db",
+            str(tmp_path / "cache.sqlite"),
+        ],
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 2
+    assert result.stderr == b""
+    output = result.stdout.decode("utf-8")
+    assert "anipyrenamer doctor" in output
+    assert "✓" in output
 
 
 def test_cli_structured_log_file_writes_phases(tmp_path: Path) -> None:
