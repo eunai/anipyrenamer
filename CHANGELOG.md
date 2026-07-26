@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-07-25
+
+### Added
+
+- Added a progress overlay for the hashing/lookup phase: while anipyrenamer is hashing files and looking them up on AniDB, an interactive terminal now shows overall progress, a per-file hashing bar (filename, byte progress, speed, ETA), and a lookup line with settled counts and connection status — so long runs are no longer silent. It only appears on an interactive terminal and clears itself when done; piped/redirected output, `--preview-format json`, and everything else are unchanged. (#75)
+- Added `--no-progress` to turn the overlay off. (#75)
+
+### Fixed
+
+- Windows: output redirected to a file or another program (piping) now uses UTF-8 instead of crashing or garbling Unicode characters in the run summary. (#78)
+
 ## [2.5.0] - 2026-07-20
 
 ### Added
